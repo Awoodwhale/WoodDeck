@@ -1,0 +1,7 @@
+.build/
+.agents/
+dist/
+WoodDeck.app/
+.render/
+images/
+.DS_Store
