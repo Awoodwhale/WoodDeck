@@ -107,6 +107,13 @@ final class IslandController {
     private var expanded = false
     // 最近一次展开的时刻，用于抑制刚展开就收起的抖动
     private var lastExpandAt = Date.distantPast
+    private var attentionHoldUntil: Date?
+    // 自检用：不显示面板也能切换展开状态
+    func setExpandedForTest(_ value: Bool) {
+        guard Self.pointerTestMode else { return }
+        expanded = value
+        regionsDirty = true
+    }
     private var openWork: DispatchWorkItem?
     // 已排程的展开目标页：指针停在同一段时不必每帧重建定时器
     private var pendingOpenPage: DeckPage??
@@ -228,7 +235,7 @@ final class IslandController {
 
     private var collapseRegion: NSRect { regions.collapse }
 
-    // 分列布局下指针所在的段：左段返回音乐页，右段返回设置的页面
+    // 分列布局下指针所在的段：左右两段各自按设置打开页面，设为「不做特殊处理」时返回 nil
     func page(for point: NSPoint, settings: DeckSettings, screen: NSScreen?) -> DeckPage? {
         guard settings.style == .notch, let screen else { return nil }
         let metrics = ScreenMetrics.of(screen)
@@ -238,8 +245,8 @@ final class IslandController {
         let frame = compactFrame(settings: settings, style: .notch, screen: screen)
         let notchStart = frame.minX + geometry.splitLeft
         let notchEnd = notchStart + geometry.splitNotch
-        if point.x < notchStart { return .music }
-        if point.x > notchEnd { return settings.notchRightPage }
+        if point.x < notchStart { return settings.notchLeftPage.page }
+        if point.x > notchEnd { return settings.notchRightPage.page }
         return nil
     }
 
@@ -271,6 +278,8 @@ final class IslandController {
         guard !animating else { return }
 
         if collapseRegion.contains(point) {
+            // 指针回到岛上：由指针接管，提醒期间的保持到此为止
+            attentionHoldUntil = nil
             // 仍在区域内：未展开时按停留时间排程展开
             pointerInside = true
             if !expanded {
@@ -283,6 +292,7 @@ final class IslandController {
         openWork?.cancel()
         pointerInside = false
         if expanded {
+            guard !attentionHeld else { return }
             collapse()
         }
     }
@@ -508,7 +518,22 @@ final class IslandController {
         onExpandChanged?(true)
     }
 
+    // 会话提醒触发的展开：指针不在岛上时也保持一段时间，否则下一帧轮询就会收起
+    func holdExpansion(for seconds: TimeInterval) {
+        holdExpansion(until: Date().addingTimeInterval(max(1, seconds)))
+    }
+
+    func holdExpansion(until date: Date) {
+        attentionHoldUntil = date
+    }
+
+    private var attentionHeld: Bool {
+        guard let until = attentionHoldUntil else { return false }
+        return Date() < until
+    }
+
     func collapse() {
+        attentionHoldUntil = nil
         guard expanded else { return }
         expanded = false
         regionsDirty = true

@@ -101,7 +101,7 @@ enum ProviderID: String, Codable, CaseIterable, Identifiable, Sendable {
         [.claude, .codex, .antigravity, .cursor, .grokBot, .zcode, .dsh]
     }
 
-    static var builtIns: [ProviderID] { [.claude, .codex, .antigravity, .cursor] }
+    static var builtIns: [ProviderID] { [.claude, .codex, .antigravity, .cursor, .dsh] }
 
     static var usageSources: [ProviderID] { [.claude, .codex, .antigravity, .cursor, .zcode, .dsh] }
 }

@@ -6,23 +6,42 @@
 
 ## 安装
 
-1. 把本目录复制到 DSH profile 目录下：
+在 WoodDeck 的「会话通知」里找到「助手」，点 DeepSeek Harness 那一行的「配置」：
 
-   ```
-   cp -R Resources/dsh-plugin ~/.dsh/profiles/web/dsh-wooddeck-hook
-   ```
+1. 面板会显示检测到的 `dsh` 可执行文件；没检测到时可以自己填路径。
+2. 「安装到哪些 profile」列出 `~/.dsh/profiles` 下所有带 `cordis.patch.yml` 的 profile，
+   默认全部勾选。只装桌面端就只留 `web`，命令行用的 `headless` 也想要就一起勾。
+3. 点「安装插件」，WoodDeck 会把插件写到每个选中的 profile 下，并往 `cordis.patch.yml`
+   末尾追加挂载条目。重复安装不会产生重复条目，重新安装会覆盖旧的 `binaryPath`。
+4. 重启 DSH。profile 的 `dsh.profile.patchReload` 为 `live` 时保存文件即可生效。
 
-2. 在 `~/.dsh/profiles/web/cordis.patch.yml` 末尾追加下面的条目，文件里已有的内容保持不动：
+也可以用命令行做同样的事：
 
-   ```yaml
-   - insert:
-       - id: wooddeck-hook
-         name: './dsh-wooddeck-hook/index.mjs'
-         config:
-           binaryPath: /Applications/WoodDeck.app/Contents/MacOS/WoodDeck
-   ```
+```
+WoodDeck.app/Contents/MacOS/WoodDeck --dsh-hook install
+WoodDeck.app/Contents/MacOS/WoodDeck --dsh-hook status
+WoodDeck.app/Contents/MacOS/WoodDeck --dsh-hook uninstall
+```
 
-3. 重启 DSH。profile 的 `dsh.profile.patchReload` 为 `live` 时保存文件即可生效。
+命令行版本装在检测到的全部 profile 里；设置文件里挑过 profile 时按挑选的来。`DSH_HOME`
+环境变量可以指向别的 DSH 根目录。
+
+手工安装的话，把本目录复制到 profile 目录下：
+
+```
+cp -R Resources/dsh-plugin ~/.dsh/profiles/web/dsh-wooddeck-hook
+```
+
+然后往该 profile 的 `cordis.patch.yml` 末尾追加（文件里已有的内容保持不动；文件内容只有
+`[]` 时先删掉那一行）：
+
+```yaml
+- insert:
+    - id: wooddeck-hook
+      name: './dsh-wooddeck-hook/index.mjs'
+      config:
+        binaryPath: /Applications/WoodDeck.app/Contents/MacOS/WoodDeck
+```
 
 `binaryPath` 可以省略，默认值就是 `/Applications/WoodDeck.app/Contents/MacOS/WoodDeck`。
 本地开发构建的应用改成自己的路径即可。

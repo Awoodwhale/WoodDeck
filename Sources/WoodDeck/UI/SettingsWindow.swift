@@ -113,15 +113,16 @@ final class SettingsWindowController {
         return window
     }
 
-    func showDetails(columnID: UUID) {
-        let view = ModelDetailsView(columnID: columnID)
+    func showDetails(columnID: UUID, days: Int = 7) {
+        let view = ModelDetailsView(columnID: columnID, initialDays: days)
             .environmentObject(DeckModel.shared)
         let hosting = NSHostingView(rootView: view)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 460),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
                               styleMask: [.titled, .closable, .resizable],
                               backing: .buffered, defer: false)
         window.title = Loc.t("模型明细", "Model details")
         window.contentView = hosting
+        window.contentMinSize = NSSize(width: 460, height: 300)
         window.center()
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)
@@ -163,14 +164,22 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
-    @State private var selection: SettingsSection? = .general
+    @State private var selection: SettingsSection?
+    private let showsSidebar: Bool
+
+    init(initialSection: SettingsSection = .general, showsSidebar: Bool = true) {
+        _selection = State(initialValue: initialSection)
+        self.showsSidebar = showsSidebar
+    }
 
     var body: some View {
         // 普通两列布局：左侧固定宽度的条目列表，右侧表单。
         // 不用 NavigationSplitView，就没有侧栏折叠按钮、工具栏与顶部半透明带
         HStack(spacing: 0) {
-            sidebar
-            Divider()
+            if showsSidebar {
+                sidebar
+                Divider()
+            }
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -402,6 +411,22 @@ struct AppearanceSection: View {
     var body: some View {
         Form {
             Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(Loc.t("面板配色", "Panel theme"))
+                        .fontWeight(.medium)
+                    Text(Loc.t("收起形态与展开面板共用的底色、描边与强调色。",
+                               "Surface, stroke and accent shared by the collapsed form and the panel."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    themePicker
+                        .padding(.top, 2)
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text(Loc.t("配色", "Colors"))
+            }
+
+            Section {
                 SettingsPickerRow(icon: "rectangle.topthird.inset.filled",
                                   title: Loc.t("样式", "Style"),
                                   description: nil,
@@ -464,7 +489,7 @@ struct AppearanceSection: View {
                     }
                 }
                 if model.settings.notchLayout == .split {
-                    notchRightPageRow
+                    notchSegmentPageRows
                 }
                 SettingsSliderGroup(icon: "ruler",
                                     title: Loc.t("尺寸与位置", "Size and position"),
@@ -598,6 +623,57 @@ struct AppearanceSection: View {
         }
     }
 
+    // 六套面板配色：每个色块直接画出该配色下的收起形态底色、强调色与警示色
+    private var themePicker: some View {
+        HStack(spacing: 10) {
+            ForEach(PanelThemeCatalog.all, id: \.id) { palette in
+                themeSwatch(palette)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func themeSwatch(_ palette: PanelPalette) -> some View {
+        let selected = model.settings.panelTheme == palette.id
+        return Button {
+            model.update { $0.panelTheme = palette.id }
+        } label: {
+            VStack(spacing: 5) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(palette.surfaceColor)
+                        .frame(width: 62, height: 38)
+                    HStack(spacing: 4) {
+                        Capsule()
+                            .fill(palette.accentColor)
+                            .frame(width: 16, height: 4)
+                        Circle()
+                            .fill(palette.dangerColor)
+                            .frame(width: 5, height: 5)
+                        Circle()
+                            .fill(palette.primaryText)
+                            .frame(width: 5, height: 5)
+                            .opacity(0.6)
+                    }
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(selected ? Color.accentColor : Color.secondary.opacity(0.28),
+                                      lineWidth: selected ? 2 : 1)
+                )
+                Text(Loc.t(palette.name, palette.nameEn))
+                    .font(.caption2)
+                    .foregroundStyle(selected ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .frame(width: 66)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(Loc.t(palette.name, palette.nameEn))
+    }
+
     private var notchItems: [SettingsSliderItem] {
         var items = [
             SettingsSliderItem(title: Loc.t("宽度", "Width"),
@@ -626,14 +702,27 @@ struct AppearanceSection: View {
         return items
     }
 
-    // 分列布局下右侧那一段打开哪一页
-    private var notchRightPageRow: some View {
-        SettingsPickerRow(icon: "sidebar.right",
-                          title: Loc.t("右侧打开的页面", "Page opened on the right"),
-                          description: Loc.t("悬停或点击右侧那一段时显示", "Shown when you hover or click the right segment"),
-                          selection: model.setting(\.notchRightPage)) {
-            Text(Loc.t("会话", "Sessions")).tag(DeckPage.sessions)
-            Text(Loc.t("额度", "Quotas")).tag(DeckPage.quota)
+    // 分列布局下左右两段各自打开哪一页
+    private var notchSegmentPageRows: some View {
+        Group {
+            SettingsPickerRow(icon: "sidebar.left",
+                              title: Loc.t("悬停左侧打开的页面", "Page opened on the left"),
+                              description: Loc.t("默认是音乐；选「不做特殊处理」就按面板当前的页面展开",
+                                                 "Music by default; pick No specific page to open whatever page the panel is on"),
+                              selection: model.setting(\.notchLeftPage)) {
+                ForEach(NotchSegmentPage.allCases) { page in
+                    Text(page.displayName).tag(page)
+                }
+            }
+            SettingsPickerRow(icon: "sidebar.right",
+                              title: Loc.t("悬停右侧打开的页面", "Page opened on the right"),
+                              description: Loc.t("默认是会话；选「不做特殊处理」就按面板当前的页面展开",
+                                                 "Sessions by default; pick No specific page to open whatever page the panel is on"),
+                              selection: model.setting(\.notchRightPage)) {
+                ForEach(NotchSegmentPage.allCases) { page in
+                    Text(page.displayName).tag(page)
+                }
+            }
         }
     }
 

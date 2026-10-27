@@ -3,12 +3,16 @@ import SwiftUI
 
 // 用 CATextLayer 自带的动画实现走马灯：位移由 Core Animation 在渲染服务器上插值，
 // 屏幕上按显示器刷新率平滑推进，而进程不需要逐帧重绘视图树，CPU 占用与帧率无关。
+// 位移按设备像素对齐取样：文字层只出现在整数像素位置上，成形方式与静止时完全一致，
+// 于是滚动与否不会改变字形的深浅与粗细。
 final class MarqueeLayerView: NSView {
     private let first = CATextLayer()
     private let second = CATextLayer()
 
     private var textAttributes = NSAttributedString()
     private var textWidth: CGFloat = 0
+    private var textColor: NSColor = .white
+    private var textFont: NSFont = .systemFont(ofSize: 11)
     private var spacing: CGFloat = 28
     private var speed: CGFloat = 26
     private var initialDelay: TimeInterval = 0.9
@@ -44,8 +48,12 @@ final class MarqueeLayerView: NSView {
             || self.spacing != spacing
             || self.speed != speed
             || self.initialDelay != initialDelay
+        // 换主题时只有颜色与字重会变，这时就地重画并保持当前滚动位置
+        let restyled = !sameColor(textColor, color) || textFont != font
         textAttributes = attributed
         textWidth = width
+        textColor = color
+        textFont = font
         self.spacing = spacing
         self.speed = speed
         self.initialDelay = initialDelay
@@ -53,6 +61,8 @@ final class MarqueeLayerView: NSView {
         isPaused = paused
         if changed {
             needsRestart = true
+            applyText()
+        } else if restyled {
             applyText()
         }
         if paused {
@@ -64,10 +74,23 @@ final class MarqueeLayerView: NSView {
         }
     }
 
+    // NSColor 的相等判断对颜色空间敏感，按 sRGB 分量比较，
+    // 免得同一颜色每次求值都被当成变了而反复重画
+    private func sameColor(_ lhs: NSColor, _ rhs: NSColor) -> Bool {
+        guard let left = lhs.usingColorSpace(.sRGB), let right = rhs.usingColorSpace(.sRGB) else {
+            return lhs.isEqual(rhs)
+        }
+        return abs(left.redComponent - right.redComponent) < 0.001
+            && abs(left.greenComponent - right.greenComponent) < 0.001
+            && abs(left.blueComponent - right.blueComponent) < 0.001
+            && abs(left.alphaComponent - right.alphaComponent) < 0.001
+    }
+
     private func applyText() {
         let scale = window?.backingScaleFactor ?? 2
         for textLayer in [first, second] {
             textLayer.contentsScale = scale
+            textLayer.rasterizationScale = scale
             textLayer.string = textAttributes
         }
         needsLayout = true
@@ -89,6 +112,7 @@ final class MarqueeLayerView: NSView {
         CATransaction.setDisableActions(true)
         for textLayer in [first, second] {
             textLayer.contentsScale = scale
+            textLayer.rasterizationScale = scale
             textLayer.bounds = CGRect(x: 0, y: 0, width: textWidth, height: height)
             textLayer.fontSize = (textAttributes.attributes(at: 0, effectiveRange: nil)[.font] as? NSFont)?.pointSize ?? 11
         }
@@ -117,14 +141,27 @@ final class MarqueeLayerView: NSView {
         let duration = max(1.2, Double(distance / speed))
         layer?.speed = 1
         resetPositions()
+        // 位移只取设备像素的整数倍：文字每一帧都落在像素网格上，
+        // 于是字形的成形方式与静止时相同，不会因为亚像素位移被重新取样而变淡或变糊。
+        // 文字速度远低于刷新率（26 点/秒 对 120 帧/秒），按帧取样会产生大量重复位置，
+        // 这里改为每跨过一个设备像素取一个关键帧
+        let quantum = 1 / (window?.backingScaleFactor ?? 2)
+        let steps = max(2, Int((distance / quantum).rounded()))
+        var offsets: [CGFloat] = []
+        var keyTimes: [NSNumber] = []
+        for step in 0...steps {
+            offsets.append(min(distance, CGFloat(step) * quantum))
+            keyTimes.append(NSNumber(value: Double(step) / Double(steps)))
+        }
         for textLayer in [first, second] {
+            let base = textLayer === first ? 0 : distance
             textLayer.removeAllAnimations()
-            let animation = CABasicAnimation(keyPath: "position.x")
-            animation.fromValue = 0
-            animation.toValue = -distance
+            let animation = CAKeyframeAnimation(keyPath: "position.x")
+            animation.values = offsets.map { base - $0 }
+            animation.keyTimes = keyTimes
+            animation.calculationMode = .discrete
             animation.duration = duration
             animation.repeatCount = .infinity
-            animation.timingFunction = CAMediaTimingFunction(name: .linear)
             animation.beginTime = CACurrentMediaTime() + initialDelay
             textLayer.add(animation, forKey: "marquee")
         }

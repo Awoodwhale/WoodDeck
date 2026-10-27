@@ -3,7 +3,9 @@ import SwiftUI
 // 额度页：按工具分列，整页可上下滚动
 struct QuotaPageView: View {
     var columns: [AppColumn]
-    var onDetails: (UUID) -> Void
+    // 面板宽度，用来判断卡片够不够宽把今日与七日并排放
+    var panelWidth: Double = 520
+    var onDetails: (UUID, Int) -> Void
     var onOpenSettings: () -> Void
 
     var body: some View {
@@ -20,7 +22,10 @@ struct QuotaPageView: View {
         } else {
             HStack(alignment: .top, spacing: Theme.columnSpacing) {
                 ForEach(columns) { column in
-                    UsageColumnView(column: column, maxMetrics: Int.max, onDetails: { onDetails(column.id) })
+                    UsageColumnView(column: column,
+                                    maxMetrics: Int.max,
+                                    inlineTotals: columnWidth >= 320,
+                                    onDetails: { days in onDetails(column.id, days) })
                         .frame(maxWidth: .infinity, alignment: .top)
                 }
             }
@@ -28,6 +33,11 @@ struct QuotaPageView: View {
             .padding(.top, 10)
             .padding(.bottom, 12)
         }
+    }
+
+    private var columnWidth: Double {
+        let count = Double(max(columns.count, 1))
+        return (panelWidth - 28 - Theme.columnSpacing * (count - 1)) / count
     }
 
     private var empty: some View {

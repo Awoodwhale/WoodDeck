@@ -43,41 +43,74 @@ enum DSHHookInstaller {
         return candidatePaths.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    // DSH 的 profile 目录里有 cordis.patch.yml；优先 web，否则找第一个有该文件的
-    static var profileDirectory: URL? {
+    // 一个 dsh profile：目录名与所在位置，各自有一份 cordis.patch.yml
+    struct Profile: Identifiable, Equatable {
+        var name: String
+        var directory: URL
+        var id: String { name }
+    }
+
+    static var dshHome: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let dshHome = ProcessInfo.processInfo.environment["DSH_HOME"].flatMap { value in
-            value.hasPrefix("/") ? URL(filePath: value, directoryHint: .isDirectory) : nil
-        } ?? home.appending(path: ".dsh", directoryHint: .isDirectory)
-        let profiles = dshHome.appending(path: "profiles", directoryHint: .isDirectory)
-        let preferred = profiles.appending(path: "web", directoryHint: .isDirectory)
-        if FileManager.default.fileExists(atPath: preferred.appending(path: "cordis.patch.yml").path(percentEncoded: false)) {
-            return preferred
+        if let value = ProcessInfo.processInfo.environment["DSH_HOME"], value.hasPrefix("/") {
+            return URL(filePath: value, directoryHint: .isDirectory)
         }
-        guard let entries = try? FileManager.default.contentsOfDirectory(at: profiles, includingPropertiesForKeys: nil) else {
-            return nil
-        }
-        return entries.first { FileManager.default.fileExists(atPath: $0.appending(path: "cordis.patch.yml").path(percentEncoded: false)) }
+        return home.appending(path: ".dsh", directoryHint: .isDirectory)
     }
 
-    static var patchFile: URL? {
-        profileDirectory?.appending(path: "cordis.patch.yml")
+    // 检测到的 profile：目录下有 cordis.patch.yml 的那些，web 排在最前
+    static var profiles: [Profile] {
+        let root = dshHome.appending(path: "profiles", directoryHint: .isDirectory)
+        let entries = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        var found: [Profile] = []
+        for entry in entries {
+            let name = entry.lastPathComponent
+            if name.hasPrefix(".") || name == "node_modules" { continue }
+            guard FileManager.default.fileExists(atPath: entry.appending(path: "cordis.patch.yml").path(percentEncoded: false)) else { continue }
+            found.append(Profile(name: name, directory: entry))
+        }
+        return found.sorted { lhs, rhs in
+            if lhs.name == "web" { return rhs.name != "web" }
+            if rhs.name == "web" { return false }
+            return lhs.name < rhs.name
+        }
     }
 
-    static func status() -> Status {
-        guard let patchFile, let text = try? String(contentsOf: patchFile, encoding: .utf8) else {
+    // names 为空表示检测到的全部 profile
+    static func selectedProfiles(_ names: [String]) -> [Profile] {
+        let all = profiles
+        guard !names.isEmpty else { return all }
+        return all.filter { names.contains($0.name) }
+    }
+
+    static func status(in profile: Profile) -> Status {
+        let patch = profile.directory.appending(path: "cordis.patch.yml")
+        guard let text = try? String(contentsOf: patch, encoding: .utf8) else {
+            return .failed(Loc.t("读不到 cordis.patch.yml", "cordis.patch.yml could not be read"))
+        }
+        return text.contains(entryID) ? .installed : .notInstalled
+    }
+
+    // 全部选中的 profile 加起来的状态：只要有一个装了就算已启用
+    static func status(names: [String]) -> Status {
+        let targets = selectedProfiles(names)
+        guard !targets.isEmpty else {
             return .failed(Loc.t("没有找到 DSH 的 profile 目录", "The DSH profile directory was not found"))
         }
-        if text.contains(entryID) {
-            return FileManager.default.isExecutableFile(atPath: installedPluginURL?.path(percentEncoded: false) ?? "")
-                ? .installed
-                : .installed
+        let states = targets.map { status(in: $0) }
+        if states.contains(.installed) { return .installed }
+        for state in states {
+            if case .failed(let text) = state { return .failed(text) }
         }
         return .notInstalled
     }
 
-    static var installedPluginURL: URL? {
-        profileDirectory?.appending(path: pluginDirectoryName).appending(path: "index.mjs")
+    static func anyInstalled(names: [String]) -> Bool {
+        selectedProfiles(names).contains { status(in: $0) == .installed }
+    }
+
+    static func pluginURL(in profile: Profile) -> URL {
+        profile.directory.appending(path: pluginDirectoryName).appending(path: "index.mjs")
     }
 
     // 插件源码：优先用应用包里的副本，开发期回退到源码树
@@ -101,50 +134,60 @@ enum DSHHookInstaller {
         throw ProviderError.message(Loc.t("没有找到插件源码 dsh-plugin/index.mjs", "The plugin source dsh-plugin/index.mjs was not found"))
     }
 
-    static func install(executablePath: String) throws {
-        guard let profileDirectory else {
+    @discardableResult
+    static func install(executablePath: String, names: [String]) throws -> [Profile] {
+        let targets = selectedProfiles(names)
+        guard !targets.isEmpty else {
             throw ProviderError.message(Loc.t("没有找到 DSH 的 profile 目录，请先运行一次 dsh", "The DSH profile directory was not found; run dsh once first"))
         }
-        guard let patchFile else {
-            throw ProviderError.message(Loc.t("没有找到 cordis.patch.yml", "cordis.patch.yml was not found"))
+        let plugin = try pluginSource()
+        for profile in targets {
+            try install(plugin: plugin, executablePath: executablePath, in: profile)
         }
+        return targets
+    }
+
+    private static func install(plugin: String, executablePath: String, in profile: Profile) throws {
+        let patchFile = profile.directory.appending(path: "cordis.patch.yml")
 
         // 1. 写入插件
-        let directory = profileDirectory.appending(path: pluginDirectoryName, directoryHint: .isDirectory)
+        let directory = profile.directory.appending(path: pluginDirectoryName, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let plugin = try pluginSource()
         try plugin.write(to: directory.appending(path: "index.mjs"), atomically: true, encoding: .utf8)
 
         // 2. 备份并追加挂载条目
         let original = (try? String(contentsOf: patchFile, encoding: .utf8)) ?? ""
-        let backup = patchFile.deletingLastPathComponent().appending(path: "cordis.patch.yml.bak-wooddeck")
+        let backup = profile.directory.appending(path: "cordis.patch.yml.bak-wooddeck")
         if !FileManager.default.fileExists(atPath: backup.path(percentEncoded: false)) {
             try? original.write(to: backup, atomically: true, encoding: .utf8)
         }
-        var text = removingBlock(from: original)
+        var text = replacingEmptyArray(in: removingBlock(from: original))
         if !text.hasSuffix("\n"), !text.isEmpty { text += "\n" }
         text += try block(executablePath: executablePath)
         try text.write(to: patchFile, atomically: true, encoding: .utf8)
 
-        // 3. 校验：解析失败就回滚
+        // 3. 校验：解析失败就恢复原文件
         do {
             _ = try Yams.load(yaml: text)
         } catch {
             try? original.write(to: patchFile, atomically: true, encoding: .utf8)
-            throw ProviderError.message(Loc.t("cordis.patch.yml 校验失败，已恢复原文件：\(error.localizedDescription)",
-                                              "cordis.patch.yml failed validation and was restored: \(error.localizedDescription)"))
+            throw ProviderError.message(Loc.t("\(profile.name) 的 cordis.patch.yml 校验失败，已恢复原文件：\(error.localizedDescription)",
+                                              "cordis.patch.yml in \(profile.name) failed validation and was restored: \(error.localizedDescription)"))
         }
-        SettingsStore.shared.update { $0.dshHookEnabled = true }
     }
 
-    static func uninstall() {
-        guard let patchFile, let original = try? String(contentsOf: patchFile, encoding: .utf8) else { return }
-        let text = removingOrphanComments(from: removingBlock(from: original))
-        try? text.write(to: patchFile, atomically: true, encoding: .utf8)
-        if let directory = profileDirectory?.appending(path: pluginDirectoryName) {
-            try? FileManager.default.removeItem(at: directory)
+    @discardableResult
+    static func uninstall(names: [String]) -> [Profile] {
+        let targets = selectedProfiles(names)
+        for profile in targets {
+            let patchFile = profile.directory.appending(path: "cordis.patch.yml")
+            if let original = try? String(contentsOf: patchFile, encoding: .utf8) {
+                let text = restoringEmptyArray(in: removingOrphanComments(from: removingBlock(from: original)))
+                try? text.write(to: patchFile, atomically: true, encoding: .utf8)
+            }
+            try? FileManager.default.removeItem(at: profile.directory.appending(path: pluginDirectoryName))
         }
-        SettingsStore.shared.update { $0.dshHookEnabled = false }
+        return targets
     }
 
     // 生成挂载条目；路径里可能带空格，用单引号包住
@@ -160,6 +203,33 @@ enum DSHHookInstaller {
         \(endMarker)
 
         """
+    }
+
+    // 文件内容可能是空数组 `[]`：直接追加条目会得到非法 YAML，先去掉那一行
+    private static func replacingEmptyArray(in text: String) -> String {
+        var lines = text.components(separatedBy: "\n")
+        var emptyArrayIndex: Int?
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") || trimmed == "---" { continue }
+            guard trimmed == "[]" else { return text }
+            emptyArrayIndex = index
+        }
+        guard let emptyArrayIndex else { return text }
+        lines.remove(at: emptyArrayIndex)
+        return lines.joined(separator: "\n")
+    }
+
+    // 卸载后如果只剩注释，补回空数组，文件仍然是合法的 YAML 数组
+    private static func restoringEmptyArray(in text: String) -> String {
+        let hasContent = text.components(separatedBy: "\n").contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return !trimmed.isEmpty && !trimmed.hasPrefix("#") && trimmed != "---"
+        }
+        guard !hasContent else { return text }
+        var result = text
+        if !result.hasSuffix("\n") { result += "\n" }
+        return result + "[]\n"
     }
 
     // 删除已有条目：既包括带标记的段落，也包括手工添加过的同 id 条目，保证重复安装不会重复挂载

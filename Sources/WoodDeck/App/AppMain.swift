@@ -14,7 +14,7 @@ struct IslandRootView: View {
     @ObservedObject var state: DeckAppState
     var onMusicCommand: (MediaCommand) -> Void
     var onSeek: (Double) -> Void
-    var onDetails: (UUID) -> Void
+    var onDetails: (UUID, Int) -> Void
     var onExpandRequest: () -> Void
     var onPageChanged: ((DeckPage) -> Void)?
 
@@ -93,15 +93,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let target = self.availablePages.contains(.sessions) ? DeckPage.sessions : (self.availablePages.first ?? .sessions)
             self.state.page = target
             self.island.expand(requestedPage: target)
+            // 指针不在岛上时保持展开，等到提示消失
+            self.island.holdExpansion(for: self.model.settings.sessionNotifications.islandSeconds)
             self.reflow(animated: true)
         }
-        SessionCenter.shared.requestNotificationPermission()
-        if model.settings.sessionNotifications.anyEnabled {
-            for agent in AgentKind.allCases where model.settings.sessionNotifications.enabled(for: agent) {
-                HookInstaller.install(agent)
-            }
-            SessionCenter.shared.refreshInstalledState()
-        }
+        SessionCenter.shared.syncHooks()
 
         state.page = initialPage()
         state.showingSettings = false
@@ -191,8 +187,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state: state,
             onMusicCommand: { [model] command in model.musicCommand(command) },
             onSeek: { [model] seconds in model.seekMusic(to: seconds) },
-            onDetails: { id in
-                SettingsWindowController.shared.showDetails(columnID: id)
+            onDetails: { id, days in
+                SettingsWindowController.shared.showDetails(columnID: id, days: days)
             },
             onExpandRequest: { [weak self] in
                 guard let self else { return }

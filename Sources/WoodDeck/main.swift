@@ -7,7 +7,8 @@ let diagnosticFlags = ["--watchtest", "--sessiontest", "--conversationtest", "--
                        "--hovercost", "--hoverbreakdown", "--screentest", "--selftest", "--settingstest",
                        "--lyricswichtest", "--lyricfadetest", "--monitortest", "--memunittest",
                        "--marqueetest", "--marqueevisible", "--musicrender", "--monitorrender", "--pagetest",
-                       "--shots"]
+                       "--shots", "--themetest", "--marqueepixeltest", "--usagecost", "--notifytest",
+                       "--hookfeedback", "--sheetfeedback", "--lyricstest"]
 if ProcessInfo.processInfo.environment["WOODDECK_HOOK_SOCKET"] == nil,
    CommandLine.arguments.contains(where: { diagnosticFlags.contains($0) }) {
     let temp = FileManager.default.temporaryDirectory
@@ -121,19 +122,31 @@ if let index = CommandLine.arguments.firstIndex(of: "--dsh-hook"), index + 1 < C
         case "install":
             do {
                 let binary = Bundle.main.executablePath ?? CommandLine.arguments[0]
-                try DSHHookInstaller.install(executablePath: binary)
-                print("已安装：\(DSHHookInstaller.installedPluginURL?.path(percentEncoded: false) ?? "-")")
+                let names = SettingsStore.shared.settings.dshSelectedProfiles
+                try DSHHookInstaller.install(executablePath: binary, names: names)
+                for profile in DSHHookInstaller.selectedProfiles(names) {
+                    print("已安装：\(profile.name) → \(DSHHookInstaller.pluginURL(in: profile).path(percentEncoded: false))")
+                }
             } catch {
                 print("安装失败：\(error.localizedDescription)")
                 exit(1)
             }
         case "uninstall":
-            DSHHookInstaller.uninstall()
+            DSHHookInstaller.uninstall(names: SettingsStore.shared.settings.dshSelectedProfiles)
             print("已卸载")
         default:
-            print("状态：\(DSHHookInstaller.status().label)")
+            let names = SettingsStore.shared.settings.dshSelectedProfiles
+            print("状态：\(DSHHookInstaller.status(names: names).label)")
             print("dsh 路径：\(DSHHookInstaller.locateDSH(customPath: SettingsStore.shared.settings.dshPath) ?? "未找到")")
-            print("profile：\(DSHHookInstaller.profileDirectory?.path(percentEncoded: false) ?? "未找到")")
+            let detected = DSHHookInstaller.profiles
+            if detected.isEmpty {
+                print("profile：未找到")
+            } else {
+                for profile in detected {
+                    let state = DSHHookInstaller.status(in: profile)
+                    print("profile：\(profile.name)（\(state.label)）\(profile.directory.path(percentEncoded: false))")
+                }
+            }
         }
     }
     exit(0)
@@ -143,6 +156,12 @@ if let index = CommandLine.arguments.firstIndex(of: "--dsh-hook"), index + 1 < C
 if let index = CommandLine.arguments.firstIndex(of: "--hovertest") {
     let mode = index + 1 < CommandLine.arguments.count ? CommandLine.arguments[index + 1] : "notch"
     MainActor.assumeIsolated { HoverTest.run(mode: mode) }
+    exit(0)
+}
+
+// 会话提醒自动展开后能否保持
+if CommandLine.arguments.contains("--expandholdtest") {
+    MainActor.assumeIsolated { HoverTest.expandHoldReport() }
     exit(0)
 }
 
@@ -163,6 +182,21 @@ if CommandLine.arguments.contains("--hittest") {
 
 if CommandLine.arguments.contains("--popuptest") {
     MainActor.assumeIsolated { HoverTest.sessionPopupReport() }
+    exit(0)
+}
+
+if CommandLine.arguments.contains("--themetest") {
+    MainActor.assumeIsolated { ThemeTest.run() }
+    exit(0)
+}
+
+if CommandLine.arguments.contains("--marqueepixeltest") {
+    MainActor.assumeIsolated { MarqueePixelTest.run() }
+    exit(0)
+}
+
+if CommandLine.arguments.contains("--usagecost") {
+    UsageCostTest.run()
     exit(0)
 }
 
@@ -248,7 +282,50 @@ if CommandLine.arguments.contains("--settingsshot") {
     exit(0)
 }
 
+// 开关会话读取的反馈文案走一遍真实路径，结束时恢复原来的开关
+if CommandLine.arguments.contains("--hookfeedback") {
+    MainActor.assumeIsolated {
+        let center = SessionCenter.shared
+        let names = { SettingsStore.shared.settings.dshSelectedProfiles }
+        let original = SettingsStore.shared.settings.sessionNotifications.enabled(for: .dsh)
+        center.refreshInstalledState()
+        print("开关前：\(original ? "开" : "关")　插件状态：\(DSHHookInstaller.status(names: names()).label)")
+        center.setEnabled(true, for: .dsh)
+        print("开启后提示：\(center.hookMessage ?? "无")")
+        print("开启后错误：\(center.hookError ?? "无")")
+        for profile in DSHHookInstaller.profiles {
+            print("  \(profile.name)：\(DSHHookInstaller.status(in: profile).label)")
+        }
+        center.setEnabled(false, for: .dsh)
+        print("关闭后提示：\(center.hookMessage ?? "无")")
+        print("关闭后状态：\(DSHHookInstaller.status(names: names()).label)")
+        center.setEnabled(original, for: .dsh)
+        print("恢复后：\(SettingsStore.shared.settings.sessionNotifications.enabled(for: .dsh) ? "开" : "关")　插件状态：\(DSHHookInstaller.status(names: names()).label)")
+    }
+    exit(0)
+}
+
+// 配置面板里装完插件之后的反馈文案
+if let index = CommandLine.arguments.firstIndex(of: "--sheetfeedback"),
+   index + 1 < CommandLine.arguments.count {
+    MainActor.assumeIsolated { HoverTest.sheetFeedbackReport(directory: CommandLine.arguments[index + 1]) }
+    exit(0)
+}
+
 // 设置窗口自检：离屏创建，不激活、不显示
+if CommandLine.arguments.contains("--notifytest") {
+    MainActor.assumeIsolated {
+        print("bundle：\(Bundle.main.bundleIdentifier ?? "无")")
+        SessionCenter.shared.refreshNotificationPermission()
+        let deadline = Date().addingTimeInterval(4)
+        while Date() < deadline && SessionCenter.shared.notificationPermission == .unknown {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        }
+        print("通知权限：\(SessionCenter.shared.notificationPermission.label)")
+    }
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--settingstest") {
     MainActor.assumeIsolated {
         let shown = CommandLine.arguments.contains("shown")
@@ -286,6 +363,35 @@ if CommandLine.arguments.contains("--selftest") {
     let semaphore = DispatchSemaphore(value: 0)
     Task {
         await SelfTest.run()
+        semaphore.signal()
+    }
+    semaphore.wait()
+    exit(0)
+}
+
+if let index = CommandLine.arguments.firstIndex(of: "--lyricstest") {
+    let rest = Array(CommandLine.arguments.dropFirst(index + 1))
+    var specs: [String] = []
+    var source: String?
+    var preferred: LyricsService.Source?
+    var cursor = 0
+    while cursor < rest.count {
+        if rest[cursor] == "--lyricsource", cursor + 1 < rest.count {
+            source = rest[cursor + 1]
+            cursor += 2
+            continue
+        }
+        if rest[cursor] == "--prefer", cursor + 1 < rest.count {
+            preferred = LyricsService.Source(rawValue: rest[cursor + 1])
+            cursor += 2
+            continue
+        }
+        if !rest[cursor].hasPrefix("--") { specs.append(rest[cursor]) }
+        cursor += 1
+    }
+    let semaphore = DispatchSemaphore(value: 0)
+    Task {
+        await SelfTest.lyricQueryReport(specs, source: source, preferred: preferred)
         semaphore.signal()
     }
     semaphore.wait()

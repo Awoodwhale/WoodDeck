@@ -3,6 +3,46 @@ import Foundation
 
 // 命令行自检：不启动界面，直接跑一遍各数据来源并打印真实结果
 enum SelfTest {
+    // 歌词查询自检：每项写成「标题|歌手|专辑|时长」，打印最终来自哪个数据源
+    // 传入 --lyricsource 时只查那一个数据源；传入 --prefer 时按播放源顺序查询
+    static func lyricQueryReport(_ specs: [String], source: String?, preferred: LyricsService.Source? = nil) async {
+        let manifests = specs.isEmpty ? defaultLyricCases : specs
+        let http = HTTPClient()
+        for manifest in manifests {
+            let fields = manifest.components(separatedBy: "|")
+            let title = fields.count > 0 ? fields[0] : ""
+            let artist = fields.count > 1 ? fields[1] : ""
+            let album = fields.count > 2 ? fields[2] : ""
+            let duration = fields.count > 3 ? Double(fields[3]) ?? 0 : 0
+            let started = Date()
+            let result: (lines: [LyricLine], source: String)
+            if let source {
+                let lines = await LyricsService.fetchFrom(source,
+                                                          title: title,
+                                                          artist: artist,
+                                                          album: album,
+                                                          duration: duration,
+                                                          http: http)
+                result = (lines, source)
+            } else {
+                result = await LyricsService.fetchDetailed(title: title, artist: artist, album: album, duration: duration, http: http, preferred: preferred)
+            }
+            let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+            let head = result.lines.first.map { "首行 \(String(format: "%.2f", $0.time))s \($0.text)" } ?? "没有歌词"
+            let translation = result.lines.contains { $0.translation != nil } ? "，含翻译" : ""
+            print("\(title) / \(artist) / \(album.isEmpty ? "无专辑" : album) / \(Int(duration))s → \(result.source)，\(result.lines.count) 行\(translation)（\(elapsed) 毫秒）")
+            print("    \(head)")
+        }
+    }
+
+    private static let defaultLyricCases = [
+        "Emotional|Keyshia Cole|11:11 Reset|291",
+        "晴天|周杰伦|叶惠美|269",
+        "Die With A Smile|Lady Gaga|不存在的专辑|251",
+        "Fortnight|Taylor Swift|THE TORTURED POETS DEPARTMENT|229",
+        "七里香|周杰伦|七里香|299",
+    ]
+
     static func run() async {
         let locations = DataLocations.detect()
         let http = HTTPClient()

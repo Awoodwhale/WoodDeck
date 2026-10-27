@@ -107,6 +107,28 @@ enum DeckPage: String, Codable, CaseIterable {
     }
 }
 
+// 分列刘海两侧各自在悬停时打开哪一页；none 表示不改页面，按面板当前的页面展开
+enum NotchSegmentPage: String, Codable, CaseIterable, Identifiable {
+    case none, quota, sessions, music, monitor
+
+    var id: String { rawValue }
+
+    var page: DeckPage? {
+        switch self {
+        case .none: nil
+        case .quota: DeckPage.quota
+        case .sessions: DeckPage.sessions
+        case .music: DeckPage.music
+        case .monitor: DeckPage.monitor
+        }
+    }
+
+    var displayName: String {
+        if case .none = self { return Loc.t("不做特殊处理", "No specific page") }
+        return page?.displayName ?? ""
+    }
+}
+
 // 展开的触发方式
 enum ExpandTrigger: String, Codable, CaseIterable, Identifiable {
     case hover, click
@@ -264,8 +286,9 @@ enum AppPresets {
         percent >= criticalPercent ? 2 : percent >= warningPercent ? 1 : 0
     }
 
+    // 接受 #RRGGBB 与 #RRGGBBAA 两种写法，面板配色里的描边与底色都带透明度
     static func isColor(_ value: String) -> Bool {
-        value.range(of: "^#[0-9A-Fa-f]{6}$", options: .regularExpression) != nil
+        value.range(of: "^#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$", options: .regularExpression) != nil
     }
 
     static func normalizeColor(_ value: String) -> String {
@@ -356,8 +379,9 @@ struct DeckSettings: Codable {
     var showClock: Bool = false
     // 刘海屏上的排版：分列两侧时每侧的宽度，以及两个角标
     var notchLayout: NotchLayout = .split
-    // 分列布局下，悬停或点击右侧那一段时打开的页面
-    var notchRightPage: DeckPage = .sessions
+    // 分列布局下，悬停或点击左右两段时各自打开的页面；none 表示按面板当前的页面展开
+    var notchLeftPage: NotchSegmentPage = .music
+    var notchRightPage: NotchSegmentPage = .sessions
     // 分列布局左右两段各自可调：音乐侧需要更宽才放得下歌词
     var notchLeftWidth: Double = 150
     var notchRightWidth: Double = 96
@@ -383,15 +407,25 @@ struct DeckSettings: Codable {
     var displayMode: DisplayMode = .main
     var displayID: String = ""
 
-    // DSH 会话通知插件与自定义的 dsh 路径
-    var dshHookEnabled: Bool = false
+    // 自定义的 dsh 路径；dshProfiles 为空表示安装在检测到的全部 profile 里
     var dshPath: String = ""
+    var dshProfiles: [String] = []
+    // 用户是否手动挑选过 profile；没挑过时用检测到的全部
+    var dshProfilesCustomized: Bool = false
+
+    // 交给安装器用的 profile 名字列表，空数组表示全部
+    var dshSelectedProfiles: [String] {
+        dshProfilesCustomized ? dshProfiles : []
+    }
+
+    // 设置文件的修订号，用于把新的默认值补到旧文件上
+    var settingsRevision: Int = 0
 
     var apps: [AppEntry] = DeckSettings.defaultApps
 
     static var defaultApps: [AppEntry] {
         ProviderID.builtIns.map { id in
-            AppEntry(quotaSource: id, usageSource: id, enabled: id == .claude || id == .codex)
+            AppEntry(quotaSource: id, usageSource: id, enabled: id == .claude || id == .codex || id == .dsh)
         }
     }
 
@@ -447,7 +481,8 @@ struct DeckSettings: Codable {
         showSessions = value(.showSessions, true)
         showClock = value(.showClock, false)
         notchLayout = value(.notchLayout, NotchLayout.split)
-        notchRightPage = value(.notchRightPage, DeckPage.sessions)
+        notchLeftPage = NotchSegmentPage(rawValue: value(.notchLeftPage, "music")) ?? .music
+        notchRightPage = NotchSegmentPage(rawValue: value(.notchRightPage, "sessions")) ?? .sessions
         notchLeftWidth = value(.notchLeftWidth, 150)
         notchRightWidth = value(.notchRightWidth, 96)
         showCornerTags = value(.showCornerTags, true)
@@ -466,8 +501,10 @@ struct DeckSettings: Codable {
         sessionNotifications = value(.sessionNotifications, SessionNotificationSettings())
         displayMode = value(.displayMode, DisplayMode.main)
         displayID = value(.displayID, "")
-        dshHookEnabled = value(.dshHookEnabled, false)
         dshPath = value(.dshPath, "")
+        dshProfiles = value(.dshProfiles, [])
+        dshProfilesCustomized = value(.dshProfilesCustomized, false)
+        settingsRevision = value(.settingsRevision, 0)
         apps = value(.apps, DeckSettings.defaultApps)
     }
 
@@ -530,11 +567,27 @@ struct DeckSettings: Codable {
         clockCustomColor = AppPresets.normalizeColor(clockCustomColor).isEmpty ? "#B9A8FF" : AppPresets.normalizeColor(clockCustomColor)
         if clockGradient.count != 3 { clockGradient = ["#FFB38A", "#FF7EB3", "#B69CFF"] }
         clockGradient = clockGradient.map { AppPresets.normalizeColor($0).isEmpty ? "#FFB38A" : AppPresets.normalizeColor($0) }
+        sessionNotifications.islandSeconds = clamp(sessionNotifications.islandSeconds,
+                                                   SessionNotificationSettings.islandRange,
+                                                   SessionNotificationSettings.islandDefault)
+        dshProfiles = dshProfiles.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
     private func clamp(_ value: Double, _ range: ClosedRange<Double>, _ fallback: Double) -> Double {
         guard value.isFinite else { return fallback }
         return min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    // 把后来改成默认开启的项补到旧设置文件上，只做一次
+    mutating func applyDefaults() -> Bool {
+        guard settingsRevision < 1 else { return false }
+        if let index = apps.firstIndex(where: { $0.quotaSource == .dsh }) {
+            apps[index].enabled = true
+        } else if apps.count < AppPresets.maximumApps {
+            apps.append(AppEntry(quotaSource: .dsh, usageSource: .dsh))
+        }
+        settingsRevision = 1
+        return true
     }
 
     func entry(_ id: ProviderID) -> AppEntry? { apps.first { $0.quotaSource == id } }
@@ -588,7 +641,9 @@ final class SettingsStore {
             SupportFiles.writeCrash("设置读取失败：\(error.localizedDescription)")
             settings = DeckSettings()
         }
+        let migrated = settings.applyDefaults()
         settings.normalize()
+        if migrated { save() }
     }
 
     func save() {
@@ -619,6 +674,9 @@ final class SettingsStore {
 
 // 会话通知的开关：按助手分别开关，另有横幅、声音与显示位置
 struct SessionNotificationSettings: Codable {
+    static let islandDefault: Double = 8
+    static let islandRange: ClosedRange<Double> = 2...60
+
     var claude: Bool = false
     var codex: Bool = false
     var gemini: Bool = false
@@ -628,9 +686,32 @@ struct SessionNotificationSettings: Codable {
     var sound: Bool = true
     // 会话需要处理或结束时在岛上弹出提示
     var islandPopup: Bool = true
+    // 岛上提示停留的秒数
+    var islandSeconds: Double = SessionNotificationSettings.islandDefault
     // 弹出提示时顺带展开面板
     var autoExpand: Bool = false
     var showInCompact: Bool = true
+
+    init() {}
+
+    // 逐字段解码，新增字段时旧文件里的其余开关不受影响
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            (try? container.decodeIfPresent(T.self, forKey: key)) ?? fallback
+        }
+        claude = value(.claude, false)
+        codex = value(.codex, false)
+        gemini = value(.gemini, false)
+        opencode = value(.opencode, false)
+        dsh = value(.dsh, false)
+        banner = value(.banner, true)
+        sound = value(.sound, true)
+        islandPopup = value(.islandPopup, true)
+        islandSeconds = value(.islandSeconds, SessionNotificationSettings.islandDefault)
+        autoExpand = value(.autoExpand, false)
+        showInCompact = value(.showInCompact, true)
+    }
 
     func enabled(for agent: AgentKind) -> Bool {
         switch agent {

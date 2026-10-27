@@ -13,7 +13,7 @@ struct ExpandedPanelView: View {
     var onMusicCommand: (MediaCommand) -> Void
     var onSeek: (Double) -> Void
     var onMode: () -> Void
-    var onDetails: (UUID) -> Void
+    var onDetails: (UUID, Int) -> Void
     var sessions: [AgentSession] = []
     var onDismissSession: (AgentSession) -> Void = { _ in }
     var onClearFinished: () -> Void = {}
@@ -44,6 +44,7 @@ struct ExpandedPanelView: View {
                 switch page {
                 case .quota:
                     QuotaPageView(columns: columns,
+                                  panelWidth: settings.width,
                                   onDetails: onDetails,
                                   onOpenSettings: onOpenSettings ?? onSettings)
                 case .sessions:
@@ -143,7 +144,8 @@ struct PageSwitch: View {
 struct UsageColumnView: View {
     var column: AppColumn
     var maxMetrics: Int = 3
-    var onDetails: () -> Void
+    var inlineTotals: Bool = true
+    var onDetails: (Int) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -184,32 +186,13 @@ struct UsageColumnView: View {
             Spacer(minLength: 0)
 
             if column.usageAvailable {
-                Button(action: onDetails) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: 4) {
-                            Text(Loc.t("今日", "Today"))
-                                .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.4))
-                            Text(TimeFormatting.tokens(column.todayTokens))
-                                .font(.system(size: 9.5, weight: .medium)).foregroundStyle(.white.opacity(0.65))
-                            if let cost = column.todayCost {
-                                Text(UsageMetric.money(cost, currency: "USD"))
-                                    .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.45))
-                            }
-                        }
-                        HStack(spacing: 4) {
-                            Text(Loc.t("七日", "7 days"))
-                                .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.4))
-                            Text(TimeFormatting.tokens(column.weekTokens))
-                                .font(.system(size: 9.5, weight: .medium)).foregroundStyle(.white.opacity(0.65))
-                            if let cost = column.weekCost {
-                                Text(UsageMetric.money(cost, currency: "USD"))
-                                    .font(.system(size: 9.5)).foregroundStyle(.white.opacity(0.45))
-                            }
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
-                .help(column.usageNote)
+                UsageTotalsView(todayTokens: column.todayTokens,
+                                weekTokens: column.weekTokens,
+                                todayCost: column.todayCost,
+                                weekCost: column.weekCost,
+                                inline: inlineTotals,
+                                onOpen: onDetails)
+                    .help(column.usageNote)
             } else if !column.usageNote.isEmpty {
                 Text(column.usageNote)
                     .font(.system(size: 9.5))

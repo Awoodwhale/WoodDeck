@@ -3,10 +3,7 @@ import SwiftUI
 struct SessionNotificationSection: View {
     @EnvironmentObject private var model: DeckModel
     @ObservedObject var sessions = SessionCenter.shared
-    @State private var dshStatus: DSHHookInstaller.Status = .notInstalled
-    @State private var dshFailure: String?
-
-    private let agents: [AgentKind] = [.claude, .codex, .gemini, .opencode]
+    @State private var configuring: AgentKind?
 
     var body: some View {
         Form {
@@ -25,13 +22,7 @@ struct SessionNotificationSection: View {
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
-                SettingRow(icon: "bell.badge",
-                           title: Loc.t("通知权限", "Notification permission"),
-                           description: nil) {
-                    Button(Loc.t("请求权限", "Request")) {
-                        sessions.requestNotificationPermission()
-                    }
-                }
+                permissionRow
             } header: {
                 Text(Loc.t("实时状态", "Live status"))
             } footer: {
@@ -40,22 +31,21 @@ struct SessionNotificationSection: View {
             }
 
             Section {
-                ForEach(agents) { agent in
+                ForEach(AgentKind.allCases) { agent in
                     agentRow(agent)
                 }
             } header: {
                 Text(Loc.t("助手", "Agents"))
             } footer: {
-                Text(Loc.t("会话状态来自各助手发来的事件。",
-                           "Session states come from the events the agents send."))
-            }
-
-            Section {
-                dshRows
-            } header: {
-                Text("DeepSeek Harness")
-            } footer: {
-                Text(dshFooter)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(Loc.t("开关决定是否读取这个助手的会话并发出通知；打开时 WoodDeck 会把自己的钩子写进它的配置，关闭时只清理自己写入的那部分。",
+                               "The switch decides whether WoodDeck reads this agent's sessions and notifies you; turning it on writes WoodDeck's own hook into the agent's configuration, turning it off removes only what WoodDeck wrote."))
+                    if let error = sessions.hookError {
+                        Text(error).foregroundStyle(.red)
+                    } else if let message = sessions.hookMessage {
+                        Text(message).foregroundStyle(.green)
+                    }
+                }
             }
 
             Section {
@@ -71,12 +61,17 @@ struct SessionNotificationSection: View {
                 }
                 SettingRow(icon: "bell.badge",
                            title: Loc.t("在岛上弹出提示", "Show a notice on the island"),
-                           description: Loc.t("会话结束或等待你处理时，岛上显示 8 秒提示", "Show an 8-second notice when a session finishes or waits for you")) {
+                           description: Loc.t("会话结束或等待你处理时，岛上弹出提示信息。",
+                                              "Show a notice on the island when a session finishes or waits for you.")) {
                     SettingsSwitch(isOn: model.setting(\.sessionNotifications.islandPopup))
+                }
+                if model.settings.sessionNotifications.islandPopup {
+                    islandDurationRow
                 }
                 SettingRow(icon: "arrow.up.left.and.arrow.down.right",
                            title: Loc.t("弹出提示时自动展开", "Expand automatically with the notice"),
-                           description: nil) {
+                           description: Loc.t("有会话等你处理时直接展开到会话页，并保持到提示结束。",
+                                              "Open the sessions page when a session waits for you, and keep it open until the notice ends.")) {
                     SettingsSwitch(isOn: model.setting(\.sessionNotifications.autoExpand))
                 }
                 SettingRow(icon: "bell.badge.circle",
@@ -93,92 +88,62 @@ struct SessionNotificationSection: View {
         }
         .formStyle(.grouped)
         .onAppear {
+            sessions.clearHookFeedback()
             sessions.refreshInstalledState()
-            refreshDSHStatus()
+            sessions.refreshNotificationPermission()
         }
-        .onChange(of: model.settings.dshPath) { _, _ in
-            refreshDSHStatus()
-        }
-    }
-
-    @ViewBuilder
-    private var dshRows: some View {
-        let detected = DSHHookInstaller.locateDSH(customPath: model.settings.dshPath)
-
-        SettingRow(icon: "waveform.path",
-                   title: Loc.t("DeepSeek Harness 会话通知", "DeepSeek Harness session notices"),
-                   description: detected.map { Loc.t("已检测到 dsh：\($0)", "dsh found at \($0)") }
-                       ?? Loc.t("未检测到 dsh", "dsh was not found")) {
-            HStack(spacing: 10) {
-                if detected == nil {
-                    TextField("", text: model.setting(\.dshPath), prompt: Text("/path/to/dsh"))
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 190)
-                }
-                SettingsSwitch(isOn: dshHookBinding, enabled: detected != nil)
-            }
-        }
-        if let dshFailure {
-            SettingRow(icon: "exclamationmark.triangle",
-                       title: Loc.t("插件状态", "Plugin status"),
-                       description: dshFailure) {
-                EmptyView()
-            }
-        }
-        SettingRow(icon: "folder",
-                   title: Loc.t("profile 目录", "Profile folder"),
-                   description: DSHHookInstaller.profileDirectory?.path(percentEncoded: false)
-                       ?? Loc.t("未找到", "Not found")) {
-            EmptyView()
-        }
-        SettingRow(icon: "bell",
-                   title: Loc.t("会话通知开关", "Session notices"),
-                   description: Loc.t("关闭后 DSH 的会话状态不再提示。",
-                                      "Turning this off stops the DSH session states from notifying you.")) {
-            SettingsSwitch(isOn: agentBinding(.dsh))
+        .sheet(item: $configuring) { agent in
+            AgentConfigSheet(agent: agent)
+                .environmentObject(model)
         }
     }
 
-    private var dshFooter: String {
-        DSHHookInstaller.locateDSH(customPath: model.settings.dshPath) == nil
-            ? Loc.t("填写 dsh 的可执行文件路径后会自动检测。",
-                    "The path is checked as soon as you enter it.")
-            : Loc.t("开关把 WoodDeck 的会话通知插件写入 DSH 的 profile，关闭时移除。",
-                    "The switch writes WoodDeck's session-notice plugin into the DSH profile and removes it when switched off.")
-    }
-
-    private var dshHookBinding: Binding<Bool> {
-        Binding(get: { dshStatus == .installed },
-                set: { value in
-                    if value {
-                        guard let executable = Bundle.main.executablePath else {
-                            dshFailure = Loc.t("没有找到应用的可执行文件路径",
-                                               "The app executable path was not found")
-                            return
-                        }
-                        do {
-                            try DSHHookInstaller.install(executablePath: executable)
-                            dshStatus = DSHHookInstaller.status()
-                            dshFailure = nil
-                        } catch {
-                            dshStatus = .failed(error.localizedDescription)
-                            dshFailure = error.localizedDescription
-                        }
-                    } else {
-                        DSHHookInstaller.uninstall()
-                        dshStatus = DSHHookInstaller.status()
-                        dshFailure = nil
+    private var permissionRow: some View {
+        SettingRow(icon: "bell.badge",
+                   title: Loc.t("通知权限", "Notification permission"),
+                   description: sessions.notificationPermission.label) {
+            HStack(spacing: 8) {
+                if sessions.notificationPermission == .authorized {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else if sessions.notificationPermission.needsSystemSettings {
+                    Button(Loc.t("打开系统设置", "Open Settings")) {
+                        sessions.openNotificationSettings()
                     }
-                })
+                    .controlSize(.small)
+                } else {
+                    Button(Loc.t("请求权限", "Request")) {
+                        sessions.requestNotificationPermission()
+                    }
+                    .controlSize(.small)
+                    .disabled(sessions.notificationPermission == .unavailable)
+                }
+            }
+        }
     }
 
-    private func refreshDSHStatus() {
-        dshStatus = DSHHookInstaller.status()
-        if case .failed(let text) = dshStatus {
-            dshFailure = text
-        } else {
-            dshFailure = nil
+    private var islandDurationRow: some View {
+        SettingRow(icon: "timer",
+                   title: Loc.t("提示停留时长", "Notice duration"),
+                   description: Loc.t("提示在岛上显示多久。", "How long the notice stays on the island.")) {
+            HStack(spacing: 8) {
+                Slider(value: secondsBinding,
+                       in: SessionNotificationSettings.islandRange,
+                       step: 1)
+                    .frame(width: 140)
+                Text("\(Int(model.settings.sessionNotifications.islandSeconds.rounded())) \(Loc.t("秒", "s"))")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 38, alignment: .trailing)
+            }
         }
+    }
+
+    private var secondsBinding: Binding<Double> {
+        Binding(get: { model.settings.sessionNotifications.islandSeconds },
+                set: { value in
+                    model.update { $0.sessionNotifications.islandSeconds = value.rounded() }
+                })
     }
 
     private func agentRow(_ agent: AgentKind) -> some View {
@@ -186,12 +151,11 @@ struct SessionNotificationSection: View {
                    title: agent.displayName,
                    description: statusText(agent)) {
             HStack(spacing: 8) {
-                Button(Loc.t("安装", "Install")) { sessions.install(agent) }
+                Button(Loc.t("配置", "Configure")) {
+                    sessions.clearHookFeedback()
+                    configuring = agent
+                }
                     .controlSize(.small)
-                    .disabled(installed(agent))
-                Button(Loc.t("卸载", "Uninstall")) { sessions.uninstall(agent) }
-                    .controlSize(.small)
-                    .disabled(!installed(agent))
                 SettingsSwitch(isOn: agentBinding(agent))
             }
         }
@@ -199,18 +163,15 @@ struct SessionNotificationSection: View {
 
     private func agentBinding(_ agent: AgentKind) -> Binding<Bool> {
         Binding(get: { model.settings.sessionNotifications.enabled(for: agent) },
-                set: { value in
-                    model.update { settings in
-                        settings.sessionNotifications.setEnabled(value, for: agent)
-                    }
-                })
-    }
-
-    private func installed(_ agent: AgentKind) -> Bool {
-        sessions.installedAgents[agent] ?? false
+                set: { value in sessions.setEnabled(value, for: agent) })
     }
 
     private func statusText(_ agent: AgentKind) -> String {
-        installed(agent) ? Loc.t("已安装", "Installed") : Loc.t("未安装", "Not installed")
+        guard model.settings.sessionNotifications.enabled(for: agent) else {
+            return Loc.t("已关闭 · \(agent.mechanism)", "Off · \(agent.mechanism)")
+        }
+        let hooked = sessions.installedAgents[agent] ?? false
+        let state = hooked ? Loc.t("正在读取", "Reading") : Loc.t("等待钩子生效", "Waiting for the hook")
+        return "\(state) · \(agent.mechanism)"
     }
 }

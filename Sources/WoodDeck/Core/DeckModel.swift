@@ -277,6 +277,7 @@ final class DeckModel: ObservableObject {
             entryMap[id] = reading.entries
         }
         self.entries = entryMap
+        self.usage = usage
         self.lastRefresh = now
         rebuildColumns()
         checkAlerts()
@@ -295,8 +296,8 @@ final class DeckModel: ObservableObject {
             let allEntries = entries[usageID] ?? []
             let todayEntries = allEntries.filter { $0.time >= todayStart && $0.time <= now }
             let weekEntries = allEntries.filter { $0.time >= weekStart && $0.time <= now }
-            let todayTokens = todayEntries.reduce(0) { $0 + $1.input + $1.output }
-            let weekTokens = weekEntries.reduce(0) { $0 + $1.input + $1.output }
+            let todayTokens = todayEntries.reduce(0) { $0 + $1.total }
+            let weekTokens = weekEntries.reduce(0) { $0 + $1.total }
             let todayCost = cost(of: todayEntries)
             let weekCost = cost(of: weekEntries)
 
@@ -458,8 +459,9 @@ final class DeckModel: ObservableObject {
         alertTask?.cancel()
         sessionAlertActive = true
         compactAlert = (text, session.status.color)
+        let seconds = settings.sessionNotifications.islandSeconds
         alertTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(max(1, seconds) * 1_000_000_000))
             guard !Task.isCancelled else { return }
             self?.sessionAlertActive = false
             self?.compactAlert = nil
@@ -578,8 +580,9 @@ final class DeckModel: ObservableObject {
             // 先清空上一首的歌词：新曲目的歌词要联网查，查询期间若保留旧词就会张冠李戴
             clearLyrics()
             let title = update.title, artist = update.artist, album = update.album, duration = update.duration
+            let preferred = LyricsService.preferredSource(for: update.bundleIdentifier)
             Task { [weak self] in
-                let lines = await LyricsService.fetch(title: title, artist: artist, album: album, duration: duration, http: HTTPClient())
+                let lines = await LyricsService.fetch(title: title, artist: artist, album: album, duration: duration, http: HTTPClient(), preferred: preferred)
                 await MainActor.run {
                     guard let self, self.lyricsKey == key else { return }
                     if lines.isEmpty {
@@ -741,9 +744,14 @@ struct ModelDetailRow: Identifiable {
     var model: String
     var input: Int
     var output: Int
-    var cached: Int
+    var cacheWrite: Int
+    var cacheRead: Int
     var cost: Decimal?
+    // 没有匹配到单价、因此没有计入费用的请求数
+    var unpriced: Int
     var requests: Int
+
+    var tokens: Int { input + output + cacheWrite + cacheRead }
 }
 
 extension DeckModel {
@@ -757,17 +765,31 @@ extension DeckModel {
         var grouped: [String: ModelDetailRow] = [:]
         for entry in list {
             let name = entry.model.isEmpty ? Loc.t("未知模型", "Unknown model") : entry.model
-            var row = grouped[name] ?? ModelDetailRow(model: name, input: 0, output: 0, cached: 0, cost: nil, requests: 0)
+            var row = grouped[name] ?? ModelDetailRow(model: name, input: 0, output: 0, cacheWrite: 0,
+                                                      cacheRead: 0, cost: nil, unpriced: 0, requests: 0)
             row.input += entry.input
             row.output += entry.output
-            row.cached += entry.cacheRead + entry.cacheWrite
+            row.cacheWrite += entry.cacheWrite
+            row.cacheRead += entry.cacheRead
             row.requests += 1
             if let cost = Pricing.cost(entry: entry) {
                 row.cost = (row.cost ?? 0) + cost
+            } else {
+                row.unpriced += 1
             }
             grouped[name] = row
         }
-        return grouped.values.sorted { ($0.input + $0.output) > ($1.input + $1.output) }
+        return grouped.values.sorted { $0.tokens > $1.tokens }
+    }
+
+    // 指定范围内所有条目合计金额；一条都匹配不到单价时返回空
+    func totalCost(columnID: UUID, days: Int) -> Decimal? {
+        guard let app = settings.apps.first(where: { $0.instanceID == columnID }) else { return nil }
+        let source = app.resolvedUsageSource
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: Date())
+        let start = calendar.date(byAdding: .day, value: -(max(days, 1) - 1), to: todayStart) ?? todayStart
+        return cost(of: (entries[source] ?? []).filter { $0.time >= start })
     }
 
     func usageNote(forColumn columnID: UUID) -> String {

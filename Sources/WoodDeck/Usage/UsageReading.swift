@@ -56,6 +56,15 @@ enum UsageLog {
         (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
     }
 
+    // 文件大小与修改时间一次取回，用来判断内容是否变过；会话记录动辄几十兆，
+    // 没变就整个跳过比重新解压划算得多
+    static func stamp(_ url: URL) -> (size: Int64, modified: Date) {
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else {
+            return (0, .distantPast)
+        }
+        return (Int64(values.fileSize ?? 0), values.contentModificationDate ?? .distantPast)
+    }
+
     // 备注里使用的日期，取本地日历日
     static func day(_ date: Date) -> String {
         let formatter = DateFormatter()

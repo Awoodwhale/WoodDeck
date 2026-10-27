@@ -18,6 +18,8 @@ struct PanelPalette: Equatable {
     // 强调色与警示色
     var accent: String
     var danger: String
+    // 歌词文字色：取各主题上游配色里的前景色
+    var lyric: String
 
     var surfaceColor: Color { Theme.color(surface, fallback: .black) }
     var strokeColor: Color { Theme.color(stroke, fallback: .white) }
@@ -28,6 +30,7 @@ struct PanelPalette: Equatable {
     var tertiaryText: Color { Theme.color(textTertiary, fallback: .white) }
     var accentColor: Color { Theme.color(accent, fallback: .blue) }
     var dangerColor: Color { Theme.color(danger, fallback: .red) }
+    var lyricColor: Color { Theme.color(lyric, fallback: .white) }
 }
 
 enum PanelThemeCatalog {
@@ -37,32 +40,32 @@ enum PanelThemeCatalog {
                      surface: "#000000EE", stroke: "#17FFFFFF",
                      panel: "#0B0B0DF2", card: "#12FFFFFF",
                      textPrimary: "#F5F5F7", textSecondary: "#9EEBEBF5", textTertiary: "#61EBEBF5",
-                     accent: "#0A84FF", danger: "#F2777F"),
+                     accent: "#0A84FF", danger: "#F2777F", lyric: "#F5F5F7"),
         PanelPalette(id: "oneDark", name: "One Dark Pro", nameEn: "One Dark Pro",
                      surface: "#282C34EE", stroke: "#1FFFFFFF",
                      panel: "#21252BF2", card: "#14FFFFFF",
                      textPrimary: "#ABB2BF", textSecondary: "#99ABB2BF", textTertiary: "#66ABB2BF",
-                     accent: "#61AFEF", danger: "#E06C75"),
+                     accent: "#61AFEF", danger: "#E06C75", lyric: "#DCDFE4"),
         PanelPalette(id: "githubDark", name: "GitHub 深色", nameEn: "GitHub Dark",
                      surface: "#0D1117EE", stroke: "#1FFFFFFF",
                      panel: "#0B0F14F2", card: "#14FFFFFF",
                      textPrimary: "#E6EDF3", textSecondary: "#99E6EDF3", textTertiary: "#66E6EDF3",
-                     accent: "#58A6FF", danger: "#F85149"),
+                     accent: "#58A6FF", danger: "#F85149", lyric: "#E6EDF3"),
         PanelPalette(id: "dracula", name: "Dracula", nameEn: "Dracula",
                      surface: "#282A36EE", stroke: "#1FFFFFFF",
                      panel: "#21222CF2", card: "#14FFFFFF",
                      textPrimary: "#F8F8F2", textSecondary: "#99F8F8F2", textTertiary: "#66F8F8F2",
-                     accent: "#BD93F9", danger: "#FF5555"),
+                     accent: "#BD93F9", danger: "#FF5555", lyric: "#F8F8F2"),
         PanelPalette(id: "nightOwl", name: "夜鸮", nameEn: "Night Owl",
                      surface: "#011627EE", stroke: "#1FFFFFFF",
                      panel: "#010F1CF2", card: "#14FFFFFF",
                      textPrimary: "#D6DEEB", textSecondary: "#99D6DEEB", textTertiary: "#66D6DEEB",
-                     accent: "#82AAFF", danger: "#EF5350"),
+                     accent: "#82AAFF", danger: "#EF5350", lyric: "#D6DEEB"),
         PanelPalette(id: "cyberpunk", name: "赛博朋克", nameEn: "Cyberpunk: Edgerunners",
                      surface: "#120B1EEE", stroke: "#33FCEE09",
                      panel: "#0D0716F2", card: "#1AFCEE09",
                      textPrimary: "#F7F7FF", textSecondary: "#99F7F7FF", textTertiary: "#66F7F7FF",
-                     accent: "#FCEE09", danger: "#FF2A6D")
+                     accent: "#FCEE09", danger: "#FF2A6D", lyric: "#FCE566")
     ]
 
     static func palette(id: String) -> PanelPalette {

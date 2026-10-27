@@ -83,20 +83,20 @@ struct MusicPageView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(music.title.isEmpty ? Loc.t("未知曲目", "Unknown track") : music.title)
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.95))
+                    .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1)
                 HStack(spacing: 4) {
                     Text(music.artist.isEmpty ? music.album : music.artist)
                         .font(.system(size: 11.5))
-                        .foregroundStyle(.white.opacity(0.55))
+                        .foregroundStyle(Theme.textSecondary)
                         .lineLimit(1)
                     if !music.sourceName.isEmpty {
                         Text("·")
                             .font(.system(size: 11.5))
-                            .foregroundStyle(.white.opacity(0.25))
+                            .foregroundStyle(Theme.textTertiary)
                         Text(music.sourceName)
                             .font(.system(size: 10.5))
-                            .foregroundStyle(.white.opacity(0.32))
+                            .foregroundStyle(Theme.textTertiary)
                             .lineLimit(1)
                     }
                     Spacer(minLength: 0)
@@ -151,7 +151,7 @@ struct MusicPageView: View {
             } else if music.lyrics.isEmpty {
                 LyricCrossfadeText(text: music.album.isEmpty ? " " : music.album,
                                    font: .system(size: 11.5),
-                                   color: .white.opacity(0.32),
+                                   color: Theme.lyric.opacity(0.32),
                                    rise: 0)
             } else {
                 lyricRows(maxLines: maxLines)
@@ -172,12 +172,12 @@ struct MusicPageView: View {
     private func lyricRows(maxLines: Int) -> some View {
         LyricCrossfadeText(text: music.currentLyric.isEmpty ? " " : music.currentLyric,
                            font: .system(size: 12.5, weight: .medium),
-                           color: .white.opacity(0.9),
+                           color: Theme.lyric.opacity(0.95),
                            rise: 4)
         if maxLines >= 2, showTranslation, !music.currentTranslation.isEmpty {
             LyricCrossfadeText(text: music.currentTranslation,
                                font: .system(size: 11),
-                               color: .white.opacity(0.48),
+                               color: Theme.lyric.opacity(0.55),
                                rise: 2)
             if maxLines >= 3, !music.nextLyric.isEmpty {
                 nextLine
@@ -193,14 +193,14 @@ struct MusicPageView: View {
     private var nextLine: some View {
         LyricCrossfadeText(text: music.nextLyric,
                            font: .system(size: 11.5),
-                           color: .white.opacity(0.38),
+                           color: Theme.lyric.opacity(0.42),
                            rise: 2)
     }
 
     private var previousLine: some View {
         LyricCrossfadeText(text: music.previousLyric,
                            font: .system(size: 11),
-                           color: .white.opacity(0.22),
+                           color: Theme.lyric.opacity(0.26),
                            rise: 2)
     }
 

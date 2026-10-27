@@ -141,11 +141,31 @@ enum TimeFormatting {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
+    // 缩写数字：千用 K、百万用 M、十亿用 B，小数位按量级取一到两位并去掉末尾的零
     static func tokens(_ count: Int) -> String {
         switch count {
         case ..<1_000: return "\(count)"
-        case ..<1_000_000: return String(format: "%.1fK", Double(count) / 1000)
-        default: return String(format: "%.2fM", Double(count) / 1_000_000)
+        case ..<1_000_000: return scaled(Double(count) / 1_000, decimals: 1) + "K"
+        case ..<1_000_000_000: return scaled(Double(count) / 1_000_000, decimals: 2) + "M"
+        default: return scaled(Double(count) / 1_000_000_000, decimals: 2) + "B"
         }
+    }
+
+    // 完整的数字，带千位分隔，用在提示与合计
+    static func exactTokens(_ count: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
+    }
+
+    private static func scaled(_ value: Double, decimals: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.usesGroupingSeparator = false
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = decimals
+        return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
     }
 }

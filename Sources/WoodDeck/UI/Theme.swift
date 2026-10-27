@@ -14,11 +14,15 @@ enum Theme {
     }
 
     static func nsColor(_ hex: String, fallback: NSColor = .gray) -> NSColor {
-        guard AppPresets.isColor(hex), let value = UInt32(hex.dropFirst(), radix: 16) else { return fallback }
-        return NSColor(srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
-                       green: CGFloat((value >> 8) & 0xFF) / 255,
-                       blue: CGFloat(value & 0xFF) / 255,
-                       alpha: 1)
+        guard AppPresets.isColor(hex) else { return fallback }
+        let digits = hex.dropFirst()
+        guard let value = UInt32(digits, radix: 16) else { return fallback }
+        let hasAlpha = digits.count == 8
+        let red = CGFloat((value >> (hasAlpha ? 24 : 16)) & 0xFF) / 255
+        let green = CGFloat((value >> (hasAlpha ? 16 : 8)) & 0xFF) / 255
+        let blue = CGFloat((value >> (hasAlpha ? 8 : 0)) & 0xFF) / 255
+        let alpha = hasAlpha ? CGFloat(value & 0xFF) / 255 : 1
+        return NSColor(srgbRed: red, green: green, blue: blue, alpha: alpha)
     }
 
     static func quotaColor(_ entry: AppEntry, percent: Double) -> Color {
@@ -46,6 +50,9 @@ enum Theme {
     static var accent: Color { palette.accentColor }
     @MainActor
     static var cardFill: Color { palette.cardColor }
+    // 歌词文字色：跟随主题
+    @MainActor
+    static var lyric: Color { palette.lyricColor }
 
     static func appearance(_ theme: SettingsTheme) -> NSAppearance? {
         switch theme {

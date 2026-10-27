@@ -10,6 +10,10 @@ final class SessionCenter: ObservableObject {
     @Published private(set) var sessions: [AgentSession] = []
     @Published private(set) var lastAttention: AgentSession?
     @Published private(set) var installedAgents: [AgentKind: Bool] = [:]
+    @Published private(set) var notificationPermission: NotificationPermission = .unknown
+    // 最近一次安装或卸载的结果，供设置页显示
+    @Published private(set) var hookMessage: String?
+    @Published private(set) var hookError: String?
 
     private var server: HookSocketServer?
     private var watcher: SessionLogWatcher?
@@ -39,6 +43,12 @@ final class SessionCenter: ObservableObject {
         pruneTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.prune() }
         }
+        // 用户可能在系统设置里改授权，回到前台时重新读一次
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                               object: nil, queue: .main) { _ in
+            Task { @MainActor in SessionCenter.shared.refreshNotificationPermission() }
+        }
+        refreshNotificationPermission()
     }
 
     func stop() {
@@ -178,23 +188,160 @@ final class SessionCenter: ObservableObject {
     func refreshInstalledState() {
         var map: [AgentKind: Bool] = [:]
         for agent in AgentKind.allCases {
-            map[agent] = HookInstaller.isInstalled(agent)
+            map[agent] = agent == .dsh
+                ? DSHHookInstaller.anyInstalled(names: SettingsStore.shared.settings.dshSelectedProfiles)
+                : HookInstaller.isInstalled(agent)
         }
         installedAgents = map
     }
 
+    func clearHookFeedback() {
+        hookMessage = nil
+        hookError = nil
+    }
+
     func install(_ agent: AgentKind) {
-        HookInstaller.install(agent)
+        apply(true, to: agent, reporting: true)
         refreshInstalledState()
     }
 
     func uninstall(_ agent: AgentKind) {
-        HookInstaller.uninstall(agent)
+        apply(false, to: agent, reporting: true)
         refreshInstalledState()
     }
 
-    func requestNotificationPermission() {
-        guard Bundle.main.bundleIdentifier != nil else { return }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    // 开关某个助手的会话读取：开启时写入 WoodDeck 自己的钩子，关闭时只清理这些条目
+    func setEnabled(_ enabled: Bool, for agent: AgentKind) {
+        SettingsStore.shared.update { $0.sessionNotifications.setEnabled(enabled, for: agent) }
+        apply(enabled, to: agent, reporting: true)
+        refreshInstalledState()
     }
+
+    // 启动时按开关状态对齐一次钩子
+    func syncHooks() {
+        for agent in AgentKind.allCases {
+            let enabled = SettingsStore.shared.settings.sessionNotifications.enabled(for: agent)
+            apply(enabled, to: agent, reporting: false)
+        }
+        refreshInstalledState()
+    }
+
+    private func apply(_ enabled: Bool, to agent: AgentKind, reporting: Bool) {
+        hookMessage = nil
+        hookError = nil
+        if agent == .dsh {
+            if enabled {
+                installDSH(reporting: reporting)
+            } else {
+                uninstallDSH(reporting: reporting)
+            }
+            return
+        }
+        if enabled {
+            HookInstaller.install(agent)
+            if reporting {
+                hookMessage = Loc.t("已开启 \(agent.displayName) 的会话读取", "Reading \(agent.displayName) sessions")
+            }
+        } else {
+            HookInstaller.uninstall(agent)
+            if reporting {
+                hookMessage = Loc.t("已关闭 \(agent.displayName) 的会话读取", "Stopped reading \(agent.displayName) sessions")
+            }
+        }
+    }
+
+    private func installDSH(reporting: Bool) {
+        let settings = SettingsStore.shared.settings
+        guard DSHHookInstaller.locateDSH(customPath: settings.dshPath) != nil else {
+            hookError = Loc.t("没有找到 dsh 可执行文件，请在配置面板里填写它的路径。",
+                              "dsh was not found; set its path in the Configure panel.")
+            return
+        }
+        guard let executable = Bundle.main.executablePath else {
+            hookError = Loc.t("拿不到 WoodDeck 的可执行文件路径。", "The WoodDeck executable path is unavailable.")
+            return
+        }
+        let names = settings.dshSelectedProfiles
+        do {
+            let profiles = try DSHHookInstaller.install(executablePath: executable, names: names)
+            // 取消勾选的 profile 里也要清掉，否则关掉之后插件还在上报
+            let selected = Set(DSHHookInstaller.selectedProfiles(names).map(\.name))
+            let dropped = DSHHookInstaller.profiles.map(\.name).filter { !selected.contains($0) }
+            if !dropped.isEmpty { _ = DSHHookInstaller.uninstall(names: dropped) }
+            if reporting {
+                let list = profiles.map(\.name).joined(separator: "、")
+                hookMessage = Loc.t("已开启会话读取，插件写入 \(list)", "Reading sessions; plugin written to \(list)")
+            }
+        } catch {
+            hookError = error.localizedDescription
+        }
+    }
+
+    private func uninstallDSH(reporting: Bool) {
+        let profiles = DSHHookInstaller.uninstall(names: [])
+        if reporting {
+            let list = profiles.map(\.name).joined(separator: "、")
+            hookMessage = Loc.t("已关闭会话读取，插件从 \(list) 移除", "Stopped reading sessions; plugin removed from \(list)")
+        }
+    }
+
+    func refreshNotificationPermission() {
+        guard Bundle.main.bundleIdentifier != nil else {
+            notificationPermission = .unavailable
+            return
+        }
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            let value = NotificationPermission(settings.authorizationStatus)
+            Task { @MainActor in SessionCenter.shared.notificationPermission = value }
+        }
+    }
+
+    func requestNotificationPermission() {
+        guard Bundle.main.bundleIdentifier != nil else {
+            notificationPermission = .unavailable
+            return
+        }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in
+            Task { @MainActor in SessionCenter.shared.refreshNotificationPermission() }
+        }
+    }
+
+    func openNotificationSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") else { return }
+        NSWorkspace.shared.open(url)
+    }
+}
+
+// 系统通知权限的当前状态
+enum NotificationPermission: Sendable {
+    case unknown
+    case unavailable
+    case notDetermined
+    case denied
+    case authorized
+
+    init(_ status: UNAuthorizationStatus) {
+        switch status {
+        case .notDetermined: self = .notDetermined
+        case .denied: self = .denied
+        case .authorized, .provisional, .ephemeral: self = .authorized
+        @unknown default: self = .unknown
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .unknown: Loc.t("读取中…", "Checking…")
+        case .unavailable: Loc.t("直接运行可执行文件时不可用", "Not available when running the bare executable")
+        case .notDetermined: Loc.t("尚未请求", "Not requested yet")
+        case .denied: Loc.t("已拒绝", "Denied")
+        case .authorized: Loc.t("已允许", "Allowed")
+        }
+    }
+
+    // 需要在设置里请求授权
+    var needsRequest: Bool { self == .notDetermined || self == .unknown }
+
+    // 只能去系统设置里改
+    var needsSystemSettings: Bool { self == .denied }
 }

@@ -1,11 +1,18 @@
 import Foundation
 
 // DeepSeek Harness 没有命令式的 hook 配置，这里观察它的会话记录：
-// 每个会话写在 sessions/<项目>/<会话>/session.v<N>.jsonl(.zstd) 里，逐行是事件
+// 每个会话写在 sessions/<项目>/<会话>/session.v<N>.jsonl(.zstd) 里，逐行是事件。
+// 会话文件会一直追加到几十兆，所以按文件记下已经读到的帧位置与解析出的事件，
+// 每次只看新增的那几行，而不是把整份记录重新解压一遍
 final class SessionLogWatcher {
     private struct Cache {
         var size: Int
         var modified: Date
+        // 已经读到的字节位置，落在帧边界上
+        var offset: Int
+        // 上次末尾没有换行的半行，等下一次补上
+        var tail: Data
+        var headerCwd: String
         var events: [WatchedEvent]
     }
 
@@ -22,6 +29,9 @@ final class SessionLogWatcher {
     private let queue = DispatchQueue(label: "com.wooddeck.sessionwatch")
     private let onEvent: (AgentEvent) -> Void
     private var lastSeen: [String: String] = [:]
+
+    // 只留最近这些事件，够判断「最后一条事件是否变化」即可
+    private let keepEvents = 400
 
     init(onEvent: @escaping (AgentEvent) -> Void) {
         self.onEvent = onEvent
@@ -59,14 +69,10 @@ final class SessionLogWatcher {
             guard modified >= cutoff else { continue }
 
             let key = file.path(percentEncoded: false)
-            let events: [WatchedEvent]
-            if let hit = cache[key], hit.size == size, hit.modified == modified {
-                events = hit.events
-            } else {
-                events = readEvents(file)
-                cache[key] = Cache(size: size, modified: modified, events: events)
-            }
-            guard let last = events.last else { continue }
+            let record = update(file: file, key: key, size: size, modified: modified, previous: cache[key])
+            guard let record else { continue }
+            cache[key] = record
+            guard let last = record.events.last else { continue }
 
             // 只有最后一条事件变化时才上报，避免重复提醒
             let signature = "\(last.kind)|\(last.tool)|\(Int(last.time.timeIntervalSince1970))"
@@ -90,6 +96,60 @@ final class SessionLogWatcher {
         lastSeen = lastSeen.filter { alive.contains($0.key) }
     }
 
+    // 文件没变就沿用上次的事件；变长只读新增部分；变短就整个重来
+    private func update(file: URL, key: String, size: Int, modified: Date, previous: Cache?) -> Cache? {
+        if let previous, previous.size == size, previous.modified == modified { return previous }
+        var record = previous ?? Cache(size: 0, modified: .distantPast, offset: 0, tail: Data(), headerCwd: "", events: [])
+        if size < record.offset {
+            record = Cache(size: 0, modified: .distantPast, offset: 0, tail: Data(), headerCwd: "", events: [])
+        }
+        guard let chunk = readAppended(file, from: record.offset) else {
+            return record.offset == 0 ? nil : record
+        }
+        // 第一次读取时才需要从首行取工作目录
+        let isFirstChunk = record.offset == 0 && record.headerCwd.isEmpty
+        record.offset = chunk.end
+        record.size = size
+        record.modified = modified
+
+        var content = record.tail
+        content.append(chunk.data)
+        var lines: [Data] = []
+        var lineStart = content.startIndex
+        for index in content.indices where content[index] == 0x0A {
+            if index > lineStart { lines.append(Data(content[lineStart..<index])) }
+            lineStart = content.index(after: index)
+        }
+        record.tail = lineStart < content.endIndex ? Data(content[lineStart...]) : Data()
+
+        for (index, line) in lines.enumerated() {
+            // 会话头（第一行）里记着工作目录，后面的事件常常没有
+            if isFirstChunk, index == 0, record.headerCwd.isEmpty {
+                if let json = try? JSONValue.parse(line) {
+                    let cwd = json["cwd"].text
+                    if !cwd.isEmpty { record.headerCwd = cwd }
+                }
+            }
+            guard let event = event(from: line, headerCwd: record.headerCwd) else { continue }
+            record.events.append(event)
+        }
+        if record.events.count > keepEvents {
+            record.events.removeFirst(record.events.count - keepEvents)
+        }
+        return record
+    }
+
+    // 从指定位置往后读：zstd 文件按帧解压，普通文件直接读剩余字节
+    private func readAppended(_ file: URL, from offset: Int) -> (data: Data, end: Int)? {
+        if file.lastPathComponent.lowercased().hasSuffix(".zstd") {
+            return try? ZstdFile.decompressRange(file, from: offset)
+        }
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? handle.close() }
+        guard (try? handle.seek(toOffset: UInt64(offset))) != nil, let data = try? handle.readToEnd() else { return nil }
+        return (data, offset + data.count)
+    }
+
     private func mapKind(_ kind: String) -> String {
         switch kind {
         case "turn/start", "user/message", "step/start": return "prompt"
@@ -103,48 +163,32 @@ final class SessionLogWatcher {
         }
     }
 
-    private func readEvents(_ file: URL) -> [WatchedEvent] {
-        let lines: [Data]
-        if file.lastPathComponent.lowercased().hasSuffix(".zstd") {
-            lines = (try? ZstdFile.lines(file)) ?? []
-        } else {
-            guard let data = try? Data(contentsOf: file) else { return [] }
-            lines = data.split(separator: 0x0A).map(Data.init)
-        }
-        var events: [WatchedEvent] = []
-        // 会话头（第一行）里记着工作目录，最后一行往往没有
-        var headerCwd = ""
-        if let first = lines.first, let json = try? JSONValue.parse(first) {
-            headerCwd = json["cwd"].text
-        }
-        for line in lines.suffix(400) {
-            guard let json = try? JSONValue.parse(line) else { continue }
-            let kind = json["type"].text
-            guard !kind.isEmpty else { continue }
-            let time = JSONDate.parse(json["time"]) ?? Date()
-            var tool = ""
-            var text = ""
-            if kind == "tool/call" {
-                tool = json["data"]["name"].text.isEmpty ? json["data"]["tool"].text : json["data"]["name"].text
-                text = tool
-            } else if kind == "assistant/message" {
-                let message = json["data"]["message"]
-                let content = message["content"]
-                if let items = content.array {
-                    for item in items where item["type"].text == "text" {
-                        text = item["text"].text
-                        if !text.isEmpty { break }
-                    }
+    private func event(from line: Data, headerCwd: String) -> WatchedEvent? {
+        guard let json = try? JSONValue.parse(line) else { return nil }
+        let kind = json["type"].text
+        guard !kind.isEmpty else { return nil }
+        let time = JSONDate.parse(json["time"]) ?? Date()
+        var tool = ""
+        var text = ""
+        if kind == "tool/call" {
+            tool = json["data"]["name"].text.isEmpty ? json["data"]["tool"].text : json["data"]["name"].text
+            text = tool
+        } else if kind == "assistant/message" {
+            let message = json["data"]["message"]
+            let content = message["content"]
+            if let items = content.array {
+                for item in items where item["type"].text == "text" {
+                    text = item["text"].text
+                    if !text.isEmpty { break }
                 }
-                if text.isEmpty { text = content.text }
-            } else if kind == "user/message" {
-                text = json["data"]["message"]["content"].text
             }
-            var cwd = json["cwd"].text.isEmpty ? json["data"]["cwd"].text : json["cwd"].text
-            if cwd.isEmpty { cwd = headerCwd }
-            events.append(WatchedEvent(kind: kind, tool: tool, text: String(text.prefix(200)), time: time, cwd: cwd))
+            if text.isEmpty { text = content.text }
+        } else if kind == "user/message" {
+            text = json["data"]["message"]["content"].text
         }
-        return events
+        var cwd = json["cwd"].text.isEmpty ? json["data"]["cwd"].text : json["cwd"].text
+        if cwd.isEmpty { cwd = headerCwd }
+        return WatchedEvent(kind: kind, tool: tool, text: String(text.prefix(200)), time: time, cwd: cwd)
     }
 
     private func newestSessionFiles(in root: URL) -> [URL] {

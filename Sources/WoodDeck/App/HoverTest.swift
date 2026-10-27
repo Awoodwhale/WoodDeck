@@ -220,13 +220,19 @@ enum HoverTest {
         let leftPoint = NSPoint(x: frame.minX + geometry.splitLeft / 2, y: frame.midY)
         let notchPoint = NSPoint(x: frame.minX + geometry.splitLeft + geometry.splitNotch / 2, y: frame.midY)
         let rightPoint = NSPoint(x: frame.minX + geometry.splitLeft + geometry.splitNotch + geometry.splitRight / 2, y: frame.midY)
-        func page(_ point: NSPoint) -> String {
-            controller.page(for: point, settings: settings, screen: screen)?.rawValue ?? "无（落在缺口）"
+        func page(_ point: NSPoint, _ settings: DeckSettings) -> String {
+            controller.page(for: point, settings: settings, screen: screen)?.rawValue ?? "无（保持当前页面）"
         }
         print("排版=\(settings.notchLayout.rawValue) 左段=\(Int(geometry.splitLeft)) 缺口=\(Int(geometry.splitNotch)) 右段=\(Int(geometry.splitRight))")
-        print("左段命中 → \(page(leftPoint))")
-        print("缺口处命中 → \(page(notchPoint))")
-        print("右段命中 → \(page(rightPoint))（设置里的右侧页面=\(settings.notchRightPage.rawValue)）")
+        print("左段命中 → \(page(leftPoint, settings))（设置里的左侧页面=\(settings.notchLeftPage.rawValue)）")
+        print("缺口处命中 → \(page(notchPoint, settings))")
+        print("右段命中 → \(page(rightPoint, settings))（设置里的右侧页面=\(settings.notchRightPage.rawValue)）")
+
+        // 两侧都设为「不做特殊处理」时应当保持面板当前页面，不强制跳转
+        var noneSettings = settings
+        noneSettings.notchLeftPage = .none
+        noneSettings.notchRightPage = .none
+        print("两侧都设为不做特殊处理：左段 → \(page(leftPoint, noneSettings))，右段 → \(page(rightPoint, noneSettings))")
     }
 
     // 渲染音乐页（真实尺寸），确认封面、歌词、进度与控制都在框内
@@ -378,9 +384,11 @@ enum HoverTest {
     // 会话提醒链路：用真实进程发一条 dsh 的 stop 事件，检查岛上是否出现提示文字
     @MainActor
     static func sessionPopupReport() {
+        let original = SettingsStore.shared.settings.sessionNotifications
         SettingsStore.shared.update {
             $0.sessionNotifications.dsh = true
             $0.sessionNotifications.islandPopup = true
+            $0.sessionNotifications.islandSeconds = 3
         }
         let center = SessionCenter.shared
         center.start()
@@ -402,10 +410,19 @@ enum HoverTest {
         RunLoop.main.run(until: Date().addingTimeInterval(1.0))
 
         let content = model.compactContent()
-        print("发送后提示文字：\(content.alertText ?? "无")")
+        let firstLine = content.alertText ?? "无"
+        print("发送后提示文字：\(firstLine)")
         print("提示颜色与状态：\(content.alertColor.description)")
         print("会话状态：\(center.sessions.map { $0.id + "=" + $0.status.rawValue }.joined(separator: ", "))")
+
+        // 停留时长按设置里的秒数走：3 秒之后应自动消失
+        RunLoop.main.run(until: Date().addingTimeInterval(3.0))
+        let expired = model.compactContent().alertText ?? "无"
+        print("停留 3 秒的设置下，4 秒后提示文字：\(expired)")
+        print(expired == "无" ? "提示时长跟随设置 ✓" : "提示时长没有跟随设置 ✗")
+
         center.stop()
+        SettingsStore.shared.update { $0.sessionNotifications = original }
     }
 
     // 打印设置窗口的工具栏与标题栏视图，找出侧栏折叠按钮的真实归属
@@ -481,25 +498,85 @@ enum HoverTest {
 
     // 用 SwiftUI 的离屏渲染检查各页面能否正常画出来（不需要窗口与录屏权限）
     @MainActor
+    // 开关会话读取之后配置面板的反馈文案：在临时 DSH 根目录里跑一遍真实写入
+    static func sheetFeedbackReport(directory: String) {
+        let root = URL(filePath: directory).appending(path: "dshtest")
+        let manager = FileManager.default
+        try? manager.removeItem(at: root)
+        for name in ["web", "headless"] {
+            let profile = root.appending(path: "profiles/\(name)")
+            try? manager.createDirectory(at: profile, withIntermediateDirectories: true)
+            let source = DSHHookInstaller.dshHome.appending(path: "profiles/\(name)/cordis.patch.yml")
+            let text = (try? String(contentsOf: source, encoding: .utf8)) ?? "[]\n"
+            try? text.write(to: profile.appending(path: "cordis.patch.yml"), atomically: true, encoding: .utf8)
+        }
+        let original = SettingsStore.shared.settings.sessionNotifications.enabled(for: .dsh)
+        setenv("DSH_HOME", root.path(percentEncoded: false), 1)
+        let center = SessionCenter.shared
+        center.clearHookFeedback()
+        center.setEnabled(true, for: .dsh)
+        print("开启后提示：\(center.hookMessage ?? "无")")
+        print("开启后错误：\(center.hookError ?? "无")")
+        render("agent-dsh-enabled",
+               AnyView(AgentConfigSheet(agent: .dsh).environmentObject(DeckModel.shared)),
+               size: CGSize(width: 540, height: 460), directory: directory,
+               background: Color(nsColor: .windowBackgroundColor))
+        center.setEnabled(false, for: .dsh)
+        print("关闭后提示：\(center.hookMessage ?? "无")")
+        center.setEnabled(original, for: .dsh)
+        try? manager.removeItem(at: root)
+    }
+
+    // 会话提醒展开后，指针在岛外时是否还能保持
+    @MainActor
+    static func expandHoldReport() {
+        let settings = SettingsStore.shared.settings
+        guard let screen = ScreenCatalog.target(for: settings) else { print("没有目标屏幕"); return }
+        let controller = IslandController()
+        IslandController.pointerTestMode = true
+        defer { IslandController.pointerTestMode = false }
+        controller.setExpandedForTest(true)
+        let outside = NSPoint(x: 1472, y: 491)
+        controller.handlePointer(at: outside)
+        print("没有保持时：\(controller.isExpanded ? "仍展开" : "已收起")")
+        controller.setExpandedForTest(true)
+        controller.holdExpansion(for: settings.sessionNotifications.islandSeconds)
+        controller.handlePointer(at: outside)
+        print("提醒保持期间（\(Int(settings.sessionNotifications.islandSeconds)) 秒）：\(controller.isExpanded ? "仍展开 ✓" : "已收起 ✗")")
+        controller.holdExpansion(until: Date().addingTimeInterval(-1))
+        controller.handlePointer(at: outside)
+        print("保持到期后：\(controller.isExpanded ? "仍展开 ✗" : "已收起 ✓")")
+        _ = screen
+    }
+
     static func renderPages(directory: String) {
         let model = DeckModel.shared
         model.refresh()
         // 让会话观察跑起来，渲染真实会话列表
         SessionCenter.shared.start()
         CFRunLoopRunInMode(.defaultMode, 3.0, false)
-        // 等一轮刷新把配额与会话读出来
-        let deadline = Date().addingTimeInterval(8)
+        // 等一轮刷新把配额、用量与会话读出来
+        let deadline = Date().addingTimeInterval(12)
         let loop = CFRunLoopGetMain()
-        while Date() < deadline && model.columns.isEmpty {
+        while Date() < deadline && (model.columns.isEmpty || !model.columns.contains { $0.usageAvailable }) {
             CFRunLoopRunInMode(.defaultMode, 0.2, false)
         }
         _ = loop
+        for column in model.columns {
+            print("  \(column.name)：用量可用=\(column.usageAvailable) 今日=\(column.todayTokens) 七日=\(column.weekTokens) 费用=\(String(describing: column.todayCost)) 说明=\(column.usageNote)")
+            for row in model.modelDetails(columnID: column.id, days: 7) {
+                print("    \(row.model)：输入 \(row.input) 缓存写入 \(row.cacheWrite) 缓存读取 \(row.cacheRead) 输出 \(row.output) 合计 \(row.tokens) 费用 \(String(describing: row.cost)) 未计价 \(row.unpriced) 请求 \(row.requests)")
+            }
+        }
         let settings = model.settings
         let size = CGSize(width: settings.width, height: settings.height)
         let cases: [(String, AnyView)] = [
             ("switch", AnyView(PageSwitch(page: .sessions, pages: [.quota, .sessions, .music], onChange: { _ in })
                 .padding(12).background(Color.black))),
-            ("quota", AnyView(QuotaPageView(columns: model.columns, onDetails: { _ in }, onOpenSettings: {}).content
+            ("quota", AnyView(QuotaPageView(columns: model.columns,
+                                            panelWidth: settings.width,
+                                            onDetails: { _, _ in },
+                                            onOpenSettings: {}).content
                 .frame(maxWidth: .infinity, alignment: .top).background(Color.black))),
             ("sessions", AnyView(SessionsPageView(sessions: SessionCenter.shared.activeSessions,
                                                   onDismiss: { _ in }, onClearFinished: {}).content
@@ -509,36 +586,98 @@ enum HoverTest {
                                             onMode: {})))
         ]
         for (name, view) in cases {
-            let renderer = ImageRenderer(content: view
-                .frame(width: size.width, height: size.height)
-                .background(Color.black))
-            renderer.scale = 2
-            guard let image = renderer.nsImage,
-                  let tiff = image.tiffRepresentation,
-                  let bitmap = NSBitmapImageRep(data: tiff),
-                  let png = bitmap.representation(using: .png, properties: [:]) else {
-                print("\(name)：渲染失败")
-                continue
-            }
-            let url = URL(filePath: directory).appending(path: "page-\(name).png")
-            try? png.write(to: url)
-            // 统计非背景像素比例，判断页面确实画出了内容
-            var nonBackground = 0
-            var total = 0
-            let step = max(1, bitmap.pixelsWide / 200)
-            for y in stride(from: 0, to: bitmap.pixelsHigh, by: step) {
-                for x in stride(from: 0, to: bitmap.pixelsWide, by: step) {
-                    total += 1
-                    if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) {
-                        let sum = color.redComponent + color.greenComponent + color.blueComponent
-                        if sum > 0.06 { nonBackground += 1 }
-                    }
+            render(name, view, size: size, directory: directory, background: Color.black)
+        }
+        if let column = model.columns.first {
+            render("details", AnyView(ModelDetailsView(columnID: column.id, initialDays: 7)
+                .environmentObject(model)),
+                   size: CGSize(width: 640, height: 520), directory: directory,
+                   background: Color(nsColor: .windowBackgroundColor))
+            render("details-narrow", AnyView(ModelDetailsView(columnID: column.id, initialDays: 1)
+                .environmentObject(model)),
+                   size: CGSize(width: 460, height: 420), directory: directory,
+                   background: Color(nsColor: .windowBackgroundColor))
+            render("card", AnyView(UsageColumnView(column: column,
+                                                   maxMetrics: Int.max,
+                                                   inlineTotals: false,
+                                                   onDetails: { _ in })
+                .frame(width: 260)
+                .background(Color.black)),
+                   size: CGSize(width: 280, height: 220), directory: directory, background: Color.black)
+        }
+        render("session", AnyView(SessionNotificationSection().environmentObject(model)),
+               size: CGSize(width: 640, height: 1080), directory: directory,
+               background: Color(nsColor: .windowBackgroundColor))
+        render("appearance", AnyView(AppearanceSection().environmentObject(model)),
+               size: CGSize(width: 640, height: 1180), directory: directory,
+               background: Color(nsColor: .windowBackgroundColor))
+        render("agent-dsh", AnyView(AgentConfigSheet(agent: .dsh).environmentObject(model)),
+               size: CGSize(width: 540, height: 460), directory: directory,
+               background: Color(nsColor: .windowBackgroundColor))
+        render("agent-claude", AnyView(AgentConfigSheet(agent: .claude).environmentObject(model)),
+               size: CGSize(width: 540, height: 280), directory: directory,
+               background: Color(nsColor: .windowBackgroundColor))
+
+        // 歌词颜色跟随主题：挑两套配色各渲染一张音乐页（用自检曲目，保证有歌词），便于肉眼核对
+        let originalTheme = SettingsStore.shared.settings.panelTheme
+        let sample = LyricFadeTest.display(current: "自检歌词示例", next: "下一句示例")
+        for id in ["dark", "cyberpunk"] {
+            SettingsStore.shared.update { $0.panelTheme = id }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+            render("music-\(id)", AnyView(MusicPageView(music: sample,
+                                                        onCommand: { _ in }, onSeek: { _ in },
+                                                        onMode: {})),
+                   size: size, directory: directory, background: Color.black)
+        }
+        SettingsStore.shared.update { $0.panelTheme = originalTheme }
+    }
+
+    // 用 NSHostingView 渲染一个视图并写 PNG，同时统计内容占比。
+    // ImageRenderer 画不出 ScrollView 与分段控件的内容，所以这里走真实的视图层
+    @MainActor
+    private static func render(_ name: String, _ view: AnyView, size: CGSize, directory: String, background: Color) {
+        let hosting = NSHostingView(rootView: AnyView(view
+            .frame(width: size.width, height: size.height)
+            .background(background)))
+        hosting.frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = hosting
+        window.alphaValue = 0
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.ignoresMouseEvents = true
+        window.setFrameOrigin(NSPoint(x: 0, y: 0))
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        hosting.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        let url = URL(filePath: directory).appending(path: "page-\(name).png")
+        guard let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
+            print("\(name)：取不到位图")
+            return
+        }
+        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else {
+            print("\(name)：编码失败")
+            return
+        }
+        try? png.write(to: url)
+        // 统计与背景差别明显的像素比例，判断页面确实画出了内容
+        var painted = 0
+        var total = 0
+        let step = max(1, bitmap.pixelsWide / 200)
+        for y in stride(from: 0, to: bitmap.pixelsHigh, by: step) {
+            for x in stride(from: 0, to: bitmap.pixelsWide, by: step) {
+                total += 1
+                if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) {
+                    let sum = color.redComponent + color.greenComponent + color.blueComponent
+                    if sum > 0.06 { painted += 1 }
                 }
             }
-            let ratio = total > 0 ? Double(nonBackground) / Double(total) : 0
-            print(String(format: "%@：%dx%d 像素，内容占比 %.1f%%，已写入 %@",
-                         name, bitmap.pixelsWide, bitmap.pixelsHigh, ratio * 100, url.lastPathComponent))
         }
+        let ratio = total > 0 ? Double(painted) / Double(total) : 0
+        print(String(format: "%@：%dx%d 像素，内容占比 %.1f%%，已写入 %@",
+                     name, bitmap.pixelsWide, bitmap.pixelsHigh, ratio * 100, url.lastPathComponent))
     }
 
     private static func describePoint(_ point: NSPoint) -> String {

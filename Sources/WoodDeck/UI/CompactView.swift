@@ -176,7 +176,7 @@ struct CompactIslandView: View {
             // 放不下时先停留再匀速滚动；短句换长句时靠淡入淡出过渡，位置不跳
             LyricLineText(text: content.musicText,
                           font: .system(size: 11 * splitMusicScale, weight: .semibold),
-                          color: Color.white.opacity(0.92),
+                          color: Theme.lyric.opacity(0.92),
                           paused: content.animating,
                           alignment: .leading,
                           nsFont: .systemFont(ofSize: 11 * splitMusicScale, weight: .semibold))
@@ -238,7 +238,7 @@ struct CompactIslandView: View {
                 if !content.musicText.isEmpty {
                     LyricLineText(text: content.musicText,
                                   font: .system(size: 11.5 * scale, weight: .medium),
-                                  color: Color.white.opacity(0.86),
+                                  color: Theme.lyric.opacity(0.86),
                                   paused: content.animating,
                                   nsFont: .systemFont(ofSize: 11.5 * scale, weight: .medium))
                         .frame(maxWidth: .infinity, alignment: .leading)
