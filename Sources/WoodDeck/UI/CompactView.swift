@@ -50,8 +50,12 @@ struct QuotaRing: View {
 
 struct CompactIslandView: View {
     var content: CompactContent
+    // 主题作为显式入参参与视图值。切换配色时内容可以完全没变，
+    // 视图值没有差别就会被跳过重算，颜色要等到下一次内容变化才更新
+    var themeID: String = Theme.palette.id
     var onTap: () -> Void = {}
 
+    private var palette: PanelPalette { PanelThemeCatalog.palette(id: themeID) }
     private var scale: CGFloat { CGFloat(min(max(content.scale, 0.75), 2)) }
 
     var body: some View {
@@ -91,7 +95,7 @@ struct CompactIslandView: View {
             } else {
                 ZStack {
                     NotchShape()
-                        .fill(Theme.compactFill)
+                        .fill(palette.surfaceColor)
                     VStack(spacing: 0) {
                         Spacer(minLength: content.contentTopPadding)
                         row(size: size)
@@ -101,7 +105,7 @@ struct CompactIslandView: View {
             }
         case .capsule:
             ZStack {
-                Capsule().fill(Theme.compactFill)
+                Capsule().fill(palette.surfaceColor)
                 row(size: size)
                     .padding(.top, content.contentTopPadding)
                     .padding(.horizontal, CollapsedLimits.capsuleInset * scale)
@@ -114,7 +118,7 @@ struct CompactIslandView: View {
     private func splitBody(size: CGSize) -> some View {
         ZStack {
             SplitNotchShape(bottomRadius: Theme.splitCorner)
-                .fill(Theme.compactFill)
+                .fill(palette.surfaceColor)
             HStack(spacing: 0) {
                 splitSegment(width: content.splitLeft, alignment: .trailing, isLeft: true)
                 Color.clear.frame(width: content.splitNotch)
@@ -176,7 +180,7 @@ struct CompactIslandView: View {
             // 放不下时先停留再匀速滚动；短句换长句时靠淡入淡出过渡，位置不跳
             LyricLineText(text: content.musicText,
                           font: .system(size: 11 * splitMusicScale, weight: .semibold),
-                          color: Theme.lyric.opacity(0.92),
+                          color: palette.lyricColor.opacity(0.92),
                           paused: content.animating,
                           alignment: .leading,
                           nsFont: .systemFont(ofSize: 11 * splitMusicScale, weight: .semibold))
@@ -238,7 +242,7 @@ struct CompactIslandView: View {
                 if !content.musicText.isEmpty {
                     LyricLineText(text: content.musicText,
                                   font: .system(size: 11.5 * scale, weight: .medium),
-                                  color: Theme.lyric.opacity(0.86),
+                                  color: palette.lyricColor.opacity(0.86),
                                   paused: content.animating,
                                   nsFont: .systemFont(ofSize: 11.5 * scale, weight: .medium))
                         .frame(maxWidth: .infinity, alignment: .leading)

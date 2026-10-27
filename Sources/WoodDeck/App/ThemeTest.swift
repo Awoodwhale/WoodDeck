@@ -55,6 +55,8 @@ enum ThemeTest {
         let compactUnique = Set(compactLyrics.map(\.hex))
         print("六套配色渲染出 \(compactUnique.count) 种不同的收起形态歌词颜色 \(compactUnique.count == compactLyrics.count ? "✓" : "✗")")
         liveRestyleReport()
+        liveCapsuleReport()
+        liveExpandedReport()
     }
 
     // 渲染收起形态并取条子内部像素的平均色
@@ -308,6 +310,205 @@ enum ThemeTest {
                          paused: true)
                 .frame(width: 200, height: 22)
                 .background(Color.black)
+        }
+    }
+
+    // 胶囊形态的完整链路：改设置 → 模型发布 → 视图重新求值 → 底色与歌词换色
+    @MainActor
+    private static func liveCapsuleReport() {
+        let canvas = CGSize(width: 260, height: 40)
+        let original = SettingsStore.shared.settings.panelTheme
+        let originalStyle = SettingsStore.shared.settings.style
+        let model = DeckModel.shared
+        // 收起形态要画出歌词，得先让媒体来源跑起来
+        model.start()
+        let lyricDeadline = Date().addingTimeInterval(8)
+        while Date() < lyricDeadline && model.music.currentLyric.isEmpty {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        }
+        SettingsStore.shared.update { $0.panelTheme = "dark" }
+        SettingsStore.shared.update { $0.style = .capsule }
+        let hosting = NSHostingView(rootView: AnyView(CapsuleProbe(model: model)))
+        hosting.frame = NSRect(origin: .zero, size: canvas)
+        let window = NSWindow(contentRect: hosting.frame,
+                              styleMask: [.borderless],
+                              backing: .buffered,
+                              defer: false)
+        window.contentView = hosting
+        window.alphaValue = 0
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.ignoresMouseEvents = true
+        window.setFrameOrigin(NSPoint(x: 0, y: 0))
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        hosting.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+
+        func snapshot() -> Bitmap? {
+            guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return nil }
+            hosting.cacheDisplay(in: hosting.bounds, to: rep)
+            return bitmap(of: rep, canvas: canvas)
+        }
+
+        func fill(_ bitmap: Bitmap) -> String {
+            // 胶囊居中在 260×40 的画布里，左上这块只会落在胶囊内部
+            bitmap.meanColor(in: CGRect(x: 12, y: 6, width: 6, height: 6))
+        }
+
+        // 换主题后仍然变亮的像素就是歌词笔画：底色之类的暗部不算
+        func restyledText(from before: Bitmap, to after: Bitmap) -> (count: Int, hex: String) {
+            var red = 0
+            var green = 0
+            var blue = 0
+            var count = 0
+            for y in 0..<min(before.height, after.height) {
+                for x in 0..<min(before.width, after.width) {
+                    let old = before.pixel(x: x, y: y)
+                    let new = after.pixel(x: x, y: y)
+                    let changed = max(abs(old.0 - new.0), max(abs(old.1 - new.1), abs(old.2 - new.2)))
+                    guard changed > 8, new.0 + new.1 + new.2 > 360 else { continue }
+                    red += new.0
+                    green += new.1
+                    blue += new.2
+                    count += 1
+                }
+            }
+            guard count > 0 else { return (0, "没有取样到歌词像素") }
+            return (count, String(format: "#%02X%02X%02X", red / count, green / count, blue / count))
+        }
+
+        guard let before = snapshot() else {
+            print("胶囊形态：取不到位图")
+            return
+        }
+        SettingsStore.shared.update { $0.panelTheme = "cyberpunk" }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        guard let after = snapshot() else {
+            print("胶囊形态：取不到位图")
+            return
+        }
+        SettingsStore.shared.update { $0.panelTheme = original }
+        SettingsStore.shared.update { $0.style = originalStyle }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let expected = PanelThemeCatalog.all.first { $0.id == "cyberpunk" }?.lyric ?? "#FCE566"
+        let lyric = model.music.currentLyric
+        let text = restyledText(from: before, to: after)
+        print("胶囊形态：当前句「\(lyric.isEmpty ? "（空，可能是纯音乐或播放器未报告）" : lyric)」")
+        print("胶囊形态：深色下底色 \(fill(before))，换成赛博朋克后底色 \(fill(after))")
+        print("胶囊形态：换色后仍有 \(text.count) 个歌词像素跟着变色，平均色 \(text.hex)（应为 \(expected) 附近）\(text.count > 0 ? "✓" : "✗")")
+    }
+
+    private struct CapsuleProbe: View {
+        @ObservedObject var model: DeckModel
+        @StateObject private var state = DeckAppState()
+
+        var body: some View {
+            ZStack {
+                Color(white: 0.5)
+                IslandRootView(model: model,
+                               state: state,
+                               onMusicCommand: { _ in },
+                               onSeek: { _ in },
+                               onDetails: { _, _ in },
+                               onExpandRequest: {},
+                               onPageChanged: { _ in })
+                    .frame(width: 240, height: 32)
+            }
+            .frame(width: 260, height: 40)
+        }
+    }
+
+    // 展开面板同理：只换主题时，子视图拿到的值没变，可能被跳过重算
+    @MainActor
+    private static func liveExpandedReport() {
+        let canvas = CGSize(width: 560, height: 240)
+        let original = SettingsStore.shared.settings.panelTheme
+        let model = DeckModel.shared
+        model.start()
+        SettingsStore.shared.update { $0.panelTheme = "dark" }
+        let state = DeckAppState()
+        state.expanded = true
+        state.page = .music
+        let hosting = NSHostingView(rootView: AnyView(ExpandedProbe(model: model, state: state)))
+        hosting.frame = NSRect(origin: .zero, size: canvas)
+        let window = NSWindow(contentRect: hosting.frame,
+                              styleMask: [.borderless],
+                              backing: .buffered,
+                              defer: false)
+        window.contentView = hosting
+        window.alphaValue = 0
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.ignoresMouseEvents = true
+        window.setFrameOrigin(NSPoint(x: 0, y: 0))
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        hosting.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+
+        func snapshot() -> Bitmap? {
+            guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return nil }
+            hosting.cacheDisplay(in: hosting.bounds, to: rep)
+            return bitmap(of: rep, canvas: canvas)
+        }
+
+        func restyledText(from before: Bitmap, to after: Bitmap) -> (count: Int, hex: String) {
+            var red = 0
+            var green = 0
+            var blue = 0
+            var count = 0
+            for y in 0..<min(before.height, after.height) {
+                for x in 0..<min(before.width, after.width) {
+                    let old = before.pixel(x: x, y: y)
+                    let new = after.pixel(x: x, y: y)
+                    let changed = max(abs(old.0 - new.0), max(abs(old.1 - new.1), abs(old.2 - new.2)))
+                    guard changed > 8, new.0 + new.1 + new.2 > 360 else { continue }
+                    red += new.0
+                    green += new.1
+                    blue += new.2
+                    count += 1
+                }
+            }
+            guard count > 0 else { return (0, "没有取样到文字像素") }
+            return (count, String(format: "#%02X%02X%02X", red / count, green / count, blue / count))
+        }
+
+        guard let before = snapshot() else {
+            print("展开面板：取不到位图")
+            SettingsStore.shared.update { $0.panelTheme = original }
+            return
+        }
+        SettingsStore.shared.update { $0.panelTheme = "cyberpunk" }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        guard let after = snapshot() else {
+            print("展开面板：取不到位图")
+            SettingsStore.shared.update { $0.panelTheme = original }
+            return
+        }
+        SettingsStore.shared.update { $0.panelTheme = original }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        let text = restyledText(from: before, to: after)
+        print("展开面板（音乐页）：换色后 \(text.count) 个文字像素跟着变色，平均色 \(text.hex)\(text.count > 0 ? " ✓" : " ✗")")
+    }
+
+    private struct ExpandedProbe: View {
+        @ObservedObject var model: DeckModel
+        @ObservedObject var state: DeckAppState
+
+        var body: some View {
+            ZStack {
+                Color(white: 0.5)
+                IslandRootView(model: model,
+                               state: state,
+                               onMusicCommand: { _ in },
+                               onSeek: { _ in },
+                               onDetails: { _, _ in },
+                               onExpandRequest: {},
+                               onPageChanged: { _ in })
+                    .frame(width: 520, height: 200)
+            }
+            .frame(width: 560, height: 240)
         }
     }
 }

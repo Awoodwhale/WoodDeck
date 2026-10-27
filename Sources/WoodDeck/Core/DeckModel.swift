@@ -558,8 +558,10 @@ final class DeckModel: ObservableObject {
         music.position = update.position()
         music.positionStamp = Date()
         livePosition = update.position()
-        musicPositionOrigin = music.position
+        // 锚点用「采样时刻的用时 + 采样时刻」，两者必须成对：拿已推进过的位置再配采样时刻会把同一段时间算两遍
+        musicPositionOrigin = update.elapsed
         musicPositionDate = update.timestamp
+        musicPositionRate = update.effectiveRate
         music.canToggle = true
         music.canNext = true
         music.canPrevious = true
@@ -611,12 +613,12 @@ final class DeckModel: ObservableObject {
         guard music.hasTrack else { return }
         // 位置单独存放，不进 @Published：5 次/秒地发布会让整个收起视图重建
         let now = Date()
-        if music.playing, let origin = musicPositionOrigin {
-            livePosition = origin + now.timeIntervalSince(musicPositionDate)
+        if let position = anchoredPosition(at: now) {
+            livePosition = position
         }
         guard !music.lyrics.isEmpty else { return }
-        // 播放链路有缓冲，歌词按设置整体延后，避免总是比声音早
-        let delay = Double(max(0, settings.lyricDelayMs)) / 1000
+        // 播放链路有缓冲，歌词按设置整体挪动：正数延后，负数提前
+        let delay = Double(settings.lyricDelayMs) / 1000
         let time = livePosition - delay
         var current = ""
         var next = ""
@@ -646,16 +648,25 @@ final class DeckModel: ObservableObject {
         }
     }
 
-    // 当前位置由视图按锚点自行插值，避免高频发布
-    var positionAnchor: (position: Double, date: Date, rate: Double, playing: Bool) {
-        (livePosition, Date(), music.playing ? 1 : 0, music.playing)
-    }
-
     var livePlaybackPosition: Double { livePosition }
+
+    // 按锚点算指定时刻的播放位置，供自检与实际显示共用
+    func playbackPosition(at date: Date) -> Double {
+        anchoredPosition(at: date) ?? livePosition
+    }
     private var livePosition: Double = 0
 
     private var musicPositionOrigin: Double?
     private var musicPositionDate = Date()
+    private var musicPositionRate: Double = 1
+
+    // 播放器只在状态变化时报告「用时 + 采样时刻」，位置按这两个值向外推算
+    private func anchoredPosition(at now: Date) -> Double? {
+        guard let origin = musicPositionOrigin else { return nil }
+        let advanced = music.playing ? max(0, now.timeIntervalSince(musicPositionDate)) * musicPositionRate : 0
+        let limit = music.duration > 0 ? music.duration : origin + advanced
+        return min(max(origin + advanced, 0), limit)
+    }
 
     func seekMusic(to seconds: Double) {
         guard let adapter = musicAdapter else { return }
@@ -667,6 +678,7 @@ final class DeckModel: ObservableObject {
                 self.music.positionStamp = Date()
                 self.musicPositionOrigin = seconds
                 self.musicPositionDate = Date()
+                self.musicPositionRate = 1
             }
         }
     }
@@ -677,9 +689,15 @@ final class DeckModel: ObservableObject {
             try? await adapter.send(command)
             if command == .toggle {
                 await MainActor.run {
+                    // 暂停与继续都以按下那一刻的位置重新起算
+                    let frozen = self.anchoredPosition(at: Date()) ?? self.music.position
                     self.music.playing.toggle()
-                    self.musicPositionOrigin = self.music.position
+                    self.livePosition = frozen
+                    self.music.position = frozen
+                    self.music.positionStamp = Date()
+                    self.musicPositionOrigin = frozen
                     self.musicPositionDate = Date()
+                    self.musicPositionRate = 1
                 }
             }
         }

@@ -371,8 +371,76 @@ enum SelfTest {
         print("正在播放：\(model.music.title.isEmpty ? "无" : model.music.title + " · " + model.music.artist + " / 歌词 " + String(model.music.lyrics.count) + " 行")")
         if !model.music.lyrics.isEmpty {
             print("  当前行：\(model.music.currentLyric.isEmpty ? "（尚未到第一行）" : model.music.currentLyric)")
+            // 按位置与设置的延迟算出此刻应该显示的那一行，用来核对换行判定
+            let delay = Double(model.settings.lyricDelayMs) / 1000
+            let time = model.playbackPosition(at: Date()) - delay
+            let expected = model.music.lyrics.last { $0.time <= time }
+            print(String(format: "  位置=%.3f 秒 延迟=%.2f 秒 应显示=%.2f 秒「%@」%@",
+                         time + delay, delay, expected?.time ?? -1, expected?.text ?? "无",
+                         (expected?.text ?? "") == model.music.currentLyric ? "一致" : "不一致"))
         }
         model.shutdown()
+    }
+
+    // 连续采样应用插值出的位置与适配器当场算出的位置，两者的差值就是歌词被打早或打晚的量
+    @MainActor
+    static func driftReport(seconds: Double) async {
+        let model = DeckModel.shared
+        model.start()
+        try? await Task.sleep(nanoseconds: 8_000_000_000)
+        guard model.music.hasTrack else {
+            print("没有正在播放的曲目，先放一首再跑这个自检")
+            model.shutdown()
+            return
+        }
+        print("曲目：\(model.music.title) · \(model.music.artist) 时长=\(TimeFormatting.duration(model.music.duration))")
+        let deadline = Date().addingTimeInterval(seconds)
+        var samples: [Double] = []
+        while Date() < deadline {
+            let before = Date()
+            guard let now = freshPosition() else {
+                print("取不到适配器的当前位置")
+                break
+            }
+            let after = Date()
+            // 适配器的值对应查询过程内的某一刻，取区间中点为参照，并把应用按锚点算出的同一刻位置拿来比
+            let midpoint = before.addingTimeInterval(after.timeIntervalSince(before) / 2)
+            let ours = model.playbackPosition(at: midpoint)
+            let error = ours - now.position
+            samples.append(error)
+            print(String(format: "适配器=%.3f 应用=%.3f 差=%+.3f 秒 查询耗时=%.0f 毫秒 歌词=%d 行",
+                         now.position, ours, error, after.timeIntervalSince(before) * 1000, model.music.lyrics.count))
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        if let low = samples.min(), let high = samples.max() {
+            let mean = samples.reduce(0, +) / Double(samples.count)
+            print(String(format: "差值范围=%+.3f…%+.3f 秒 平均=%+.3f 秒 样本=%d", low, high, mean, samples.count))
+        }
+        model.shutdown()
+    }
+
+    // 直接问适配器要一次当前位置：它在查询的瞬间用 elapsedTime 与 timestamp 算出 elapsedTimeNow
+    private static func freshPosition() -> (position: Double, timestamp: Double, elapsed: Double)? {
+        let resources = MediaRemoteResources.directory
+        let script = resources.appendingPathComponent("mediaremote-adapter.pl")
+        let framework = resources.appendingPathComponent("MediaRemoteAdapter.framework")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = [script.path, framework.path, "get", "--now", "--micros", "--no-artwork"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+        } catch {
+            print("适配器启动失败：\(error.localizedDescription)")
+            return nil
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard let root = try? JSONValue.parse(data) else { return nil }
+        guard let now = root["elapsedTimeNowMicros"].float else { return nil }
+        return (now / 1_000_000, (root["timestampEpochMicros"].float ?? 0) / 1_000_000, (root["elapsedTimeMicros"].float ?? 0) / 1_000_000)
     }
 
     private static func firstNowPlaying(_ adapter: MediaRemoteAdapter) async -> NowPlaying? {

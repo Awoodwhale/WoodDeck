@@ -323,6 +323,10 @@ struct CollapsedLimits {
 }
 
 struct DeckSettings: Codable {
+    static let defaultLyricDelayMs = 0
+    // 歌词整体挪动的范围：正数延后显示，负数提前显示
+    static let lyricDelayRange: ClosedRange<Double> = -1000...1000
+
     var launchAtStartup: Bool = false
     var theme: SettingsTheme = .system
     var language: Language = .system
@@ -395,8 +399,8 @@ struct DeckSettings: Codable {
     var musicCoverColor: Bool = true
     var musicIndicatorProgress: Bool = true
     var lyricsEnabled: Bool = true
-    // 歌词整体延后显示，抵消播放链路的延迟（毫秒）
-    var lyricDelayMs: Int = 300
+    // 歌词整体延后显示（毫秒），用来和声音对齐
+    var lyricDelayMs: Int = DeckSettings.defaultLyricDelayMs
     var showLyricsTranslation: Bool = true
 
     var quotaAlerts: Bool = true
@@ -495,7 +499,7 @@ struct DeckSettings: Codable {
         musicCoverColor = value(.musicCoverColor, true)
         musicIndicatorProgress = value(.musicIndicatorProgress, true)
         lyricsEnabled = value(.lyricsEnabled, true)
-        lyricDelayMs = value(.lyricDelayMs, 300)
+        lyricDelayMs = value(.lyricDelayMs, DeckSettings.defaultLyricDelayMs)
         showLyricsTranslation = value(.showLyricsTranslation, true)
         quotaAlerts = value(.quotaAlerts, true)
         sessionNotifications = value(.sessionNotifications, SessionNotificationSettings())
@@ -570,6 +574,7 @@ struct DeckSettings: Codable {
         sessionNotifications.islandSeconds = clamp(sessionNotifications.islandSeconds,
                                                    SessionNotificationSettings.islandRange,
                                                    SessionNotificationSettings.islandDefault)
+        lyricDelayMs = Int(clamp(Double(lyricDelayMs), DeckSettings.lyricDelayRange, Double(DeckSettings.defaultLyricDelayMs)))
         dshProfiles = dshProfiles.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
@@ -580,14 +585,29 @@ struct DeckSettings: Codable {
 
     // 把后来改成默认开启的项补到旧设置文件上，只做一次
     mutating func applyDefaults() -> Bool {
-        guard settingsRevision < 1 else { return false }
-        if let index = apps.firstIndex(where: { $0.quotaSource == .dsh }) {
-            apps[index].enabled = true
-        } else if apps.count < AppPresets.maximumApps {
-            apps.append(AppEntry(quotaSource: .dsh, usageSource: .dsh))
+        var changed = false
+        if settingsRevision < 1 {
+            if let index = apps.firstIndex(where: { $0.quotaSource == .dsh }) {
+                apps[index].enabled = true
+            } else if apps.count < AppPresets.maximumApps {
+                apps.append(AppEntry(quotaSource: .dsh, usageSource: .dsh))
+            }
+            settingsRevision = 1
+            changed = true
         }
-        settingsRevision = 1
-        return true
+        if settingsRevision < 2 {
+            // 位置推算提前时，默认的 300 毫秒是用来抵消这段提前量的；推算准确后按换行节拍留一点即可
+            if lyricDelayMs == 300 { lyricDelayMs = 100 }
+            settingsRevision = 2
+            changed = true
+        }
+        if settingsRevision < 3 {
+            // 位置推算已经按微秒对齐，延后改为跟随声音，默认不再额外推后
+            if lyricDelayMs == 100 { lyricDelayMs = DeckSettings.defaultLyricDelayMs }
+            settingsRevision = 3
+            changed = true
+        }
+        return changed
     }
 
     func entry(_ id: ProviderID) -> AppEntry? { apps.first { $0.quotaSource == id } }

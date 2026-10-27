@@ -8,7 +8,7 @@ let diagnosticFlags = ["--watchtest", "--sessiontest", "--conversationtest", "--
                        "--lyricswichtest", "--lyricfadetest", "--monitortest", "--memunittest",
                        "--marqueetest", "--marqueevisible", "--musicrender", "--monitorrender", "--pagetest",
                        "--shots", "--themetest", "--marqueepixeltest", "--usagecost", "--notifytest",
-                       "--hookfeedback", "--sheetfeedback", "--lyricstest"]
+                       "--hookfeedback", "--sheetfeedback", "--lyricstest", "--drift"]
 if ProcessInfo.processInfo.environment["WOODDECK_HOOK_SOCKET"] == nil,
    CommandLine.arguments.contains(where: { diagnosticFlags.contains($0) }) {
     let temp = FileManager.default.temporaryDirectory
@@ -332,6 +332,18 @@ if CommandLine.arguments.contains("--settingstest") {
         for line in SettingsWindowController.shared.inspectOffscreen(shown: shown) {
             print(line)
         }
+    }
+    exit(0)
+}
+
+if let index = CommandLine.arguments.firstIndex(of: "--drift") {
+    let seconds = index + 1 < CommandLine.arguments.count ? (Double(CommandLine.arguments[index + 1]) ?? 10) : 10
+    MainActor.assumeIsolated {
+        Task {
+            await SelfTest.driftReport(seconds: seconds)
+            CFRunLoopStop(CFRunLoopGetMain())
+        }
+        CFRunLoopRun()
     }
     exit(0)
 }

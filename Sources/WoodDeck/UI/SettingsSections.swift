@@ -154,14 +154,14 @@ struct MusicSection: View {
                                     items: [
                                         SettingsSliderItem(title: Loc.t("歌词延迟", "Lyric delay"),
                                                            value: model.intSetting(\.lyricDelayMs),
-                                                           range: 0...1000, step: 10,
+                                                           range: DeckSettings.lyricDelayRange, step: 10,
                                                            suffix: Loc.t("毫秒", "ms"))
                                     ])
             } header: {
                 Text(Loc.t("歌词", "Lyrics"))
             } footer: {
-                Text(Loc.t("歌词来自 LRCLIB、网易云音乐与 QQ 音乐的公开接口。播放链路有缓冲，歌词整体延后 0–1000 毫秒，避免比声音早。",
-                           "Lyrics come from the public LRCLIB, NetEase Cloud Music and QQ Music endpoints. The playback chain buffers, so the lyrics are delayed by 0–1000 ms to keep them from running ahead of the sound."))
+                Text(Loc.t("歌词来自 LRCLIB、网易云音乐与 QQ 音乐的公开接口。换行按固定的轮询节拍判定，这里把歌词整体挪动 −1000–1000 毫秒：正数延后显示，负数提前显示，用来和声音对齐。",
+                           "Lyrics come from the public LRCLIB, NetEase Cloud Music and QQ Music endpoints. Line changes are detected on a fixed polling beat, so the whole lyric can be shifted by −1000–1000 ms: positive values show it later, negative values earlier."))
             }
 
             Section {

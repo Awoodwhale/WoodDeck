@@ -121,7 +121,9 @@ actor MediaRemoteAdapter {
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: Self.perlPath)
-        process.arguments = [scriptURL.path, frameworkURL.path, "stream", "--no-diff", "--debounce=120"]
+        // --micros 让适配器输出微秒精度的 elapsedTimeMicros 与 timestampEpochMicros：
+        // 秒级的 timestamp 会被截断到整秒，位置推算因此最多提前一秒
+        process.arguments = [scriptURL.path, frameworkURL.path, "stream", "--no-diff", "--debounce=120", "--micros"]
         let output = Pipe()
         let error = Pipe()
         process.standardOutput = output
@@ -241,15 +243,21 @@ actor MediaRemoteAdapter {
             : payload["uniqueIdentifier"].text
         let rate = payload["playbackRate"].float ?? 1
         let key = unique.isEmpty ? "\(bundle)|\(artist)|\(title)|\(album)" : unique
+        // --micros 下时长、用时与采样时刻都以微秒给出，秒级的字段同时作为回退
+        let duration = payload["durationMicros"].float.map { $0 / 1_000_000 } ?? payload["duration"].float ?? 0
+        let elapsed = payload["elapsedTimeMicros"].float.map { $0 / 1_000_000 } ?? payload["elapsedTime"].float ?? 0
+        let timestamp = payload["timestampEpochMicros"].float.map { Date(timeIntervalSince1970: $0 / 1_000_000) }
+            ?? JSONDate.parse(payload["timestamp"])
+            ?? Date()
         return NowPlaying(
             bundleIdentifier: bundle,
             title: title,
             artist: artist,
             album: album,
-            duration: max(0, payload["duration"].float ?? 0),
-            elapsed: max(0, payload["elapsedTime"].float ?? 0),
-            // 系统给出的 timestamp 是采样时刻，新版 adapter 用 epoch 秒，也可能出现日期字符串
-            timestamp: JSONDate.parse(payload["timestamp"]) ?? Date(),
+            duration: max(0, duration),
+            elapsed: max(0, elapsed),
+            // 系统给出的 timestamp 是采样时刻，elapsed 是那一刻的用时
+            timestamp: timestamp,
             rate: rate,
             playing: payload["playing"].bool ?? (rate > 0),
             artwork: artwork(from: payload, key: key),

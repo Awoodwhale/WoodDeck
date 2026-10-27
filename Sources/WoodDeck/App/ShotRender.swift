@@ -27,6 +27,7 @@ enum ShotRender {
         settingsShot(.general, size: CGSize(width: 800, height: 660), to: folder.appending(path: "settings-general.png"))
         settingsShot(.sessions, size: CGSize(width: 800, height: 1150), to: folder.appending(path: "settings-sessions.png"))
         settingsShot(.appearance, size: CGSize(width: 800, height: 1240), to: folder.appending(path: "settings-appearance.png"))
+        settingsShot(.music, size: CGSize(width: 800, height: 900), to: folder.appending(path: "settings-music.png"))
         agentSheet(.dsh, to: folder.appending(path: "agent-dsh.png"))
         themes(content: content, settings: shotSettings, to: folder.appending(path: "themes.png"))
         print("截图目录：\(folder.path(percentEncoded: false))")

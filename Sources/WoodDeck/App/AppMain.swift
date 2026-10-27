@@ -51,7 +51,9 @@ struct IslandRootView: View {
                                   alertColor: model.compactAlert?.color ?? .white)
                 .transition(.opacity)
             } else {
-                CompactIslandView(content: model.compactContent(), onTap: onExpandRequest)
+                CompactIslandView(content: model.compactContent(),
+                                  themeID: model.settings.panelTheme,
+                                  onTap: onExpandRequest)
                     .transition(.opacity)
             }
         }
