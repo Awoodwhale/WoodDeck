@@ -23,41 +23,43 @@ struct IslandRootView: View {
     var body: some View {
         Group {
             if state.expanded {
-                ExpandedPanelView(settings: model.settings,
-                                  columns: model.columns,
-                                  music: model.music,
-                                  // 页面可能在设置里被关掉，渲染时收敛到可用列表
-                                  page: pages.contains(state.page) ? state.page : (pages.first ?? .quota),
-                                  refreshing: model.refreshing,
-                                  lastRefresh: model.lastRefresh,
-                                  onPageChange: { page in
-                                      state.page = page
-                                      model.update { $0.lastPage = page }
-                                      // 切到监控页才开始抓进程列表，切走就停掉
-                                      onPageChanged?(page)
-                                      model.fastLyricTicker = state.expanded && page == .music
-                                  },
-                                  onRefresh: { model.refresh() },
-                                  onSettings: { SettingsWindowController.shared.show() },
-                                  onMusicCommand: onMusicCommand,
-                                  onSeek: onSeek,
-                                  onMode: { model.cyclePlaybackMode() },
-                                  onDetails: onDetails,
-                                  sessions: sessionCenter.activeSessions,
-                                  onDismissSession: { session in sessionCenter.dismiss(session) },
-                                  onClearFinished: { sessionCenter.clearFinished() },
-                                  pages: pages,
-                                  alertText: model.compactAlert?.text ?? "",
-                                  alertColor: model.compactAlert?.color ?? .white)
-                .transition(.opacity)
+                expandedPanel
             } else {
                 CompactIslandView(content: model.compactContent(),
                                   themeID: model.settings.panelTheme,
                                   onTap: onExpandRequest)
-                    .transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var expandedPanel: some View {
+        ExpandedPanelView(settings: model.settings,
+                          columns: model.columns,
+                          music: model.music,
+                          // 页面可能在设置里被关掉，渲染时收敛到可用列表
+                          page: pages.contains(state.page) ? state.page : (pages.first ?? .quota),
+                          refreshing: model.refreshing,
+                          lastRefresh: model.lastRefresh,
+                          onPageChange: { page in
+                              state.page = page
+                              model.update { $0.lastPage = page }
+                              // 切到监控页才开始抓进程列表，切走就停掉
+                              onPageChanged?(page)
+                              model.fastLyricTicker = state.expanded && page == .music
+                          },
+                          onRefresh: { model.refresh() },
+                          onSettings: { SettingsWindowController.shared.show() },
+                          onMusicCommand: onMusicCommand,
+                          onSeek: onSeek,
+                          onMode: { model.cyclePlaybackMode() },
+                          onDetails: onDetails,
+                          sessions: sessionCenter.activeSessions,
+                          onDismissSession: { session in sessionCenter.dismiss(session) },
+                          onClearFinished: { sessionCenter.clearFinished() },
+                          pages: pages,
+                          alertText: model.compactAlert?.text ?? "",
+                          alertColor: model.compactAlert?.color ?? .white)
     }
 
     // 面板里可切换的页面：额度、会话、音乐各自独立
@@ -140,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installContent()
         reflow(animated: false)
         island.show()
+        warmUpExpandedContent()
 
         settingsToken = SettingsStore.shared.observe { [weak self] _ in
             guard let self else { return }
@@ -199,6 +202,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onPageChanged: { [weak self] _ in self?.syncMonitorSampling() }
         ))
+    }
+
+    // 展开面板的视图树第一次构建要几十毫秒。启动时在同一轮里建好再切回收起，
+    // 窗口尺寸不变也不会真的画出来，之后每次展开只剩几毫秒的重排
+    private func warmUpExpandedContent() {
+        let wasExpanded = state.expanded
+        state.expanded = true
+        island.layoutContentNow()
+        state.expanded = wasExpanded
+        island.layoutContentNow()
     }
 
     private func reflow(animated: Bool) {

@@ -178,6 +178,8 @@ WoodDeck.app/Contents/MacOS/WoodDeck --dsh-hook status           # install / uni
 .build/release/WoodDeck --sessiontest     # 完整跑一次会话事件链路并打印状态变化
 .build/release/WoodDeck --monitortest     # 打印一次系统监控采样
 .build/release/WoodDeck --lyricfadetest   # 核对歌词换句的淡入淡出
+.build/release/WoodDeck --animtest        # 测展开收起的动画节拍、布局耗时与静止时的重排次数
+.build/release/WoodDeck --animtest swap   # 测从收起条换成展开面板的耗时（加 warm 看启动预热后的结果）
 .build/release/WoodDeck --lyricstest "晴天|周杰伦|叶惠美|269"   # 打印歌词来自哪一家、行数与耗时
 .build/release/WoodDeck --lyricstest --lyricsource netease "晴天|周杰伦|叶惠美|269"   # 只查某一家
 .build/release/WoodDeck --lyricstest --prefer netease "晴天|周杰伦|叶惠美|269"        # 按播放源决定顺序

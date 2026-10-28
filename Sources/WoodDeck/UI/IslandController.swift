@@ -257,6 +257,8 @@ final class IslandController {
     private var hoverTimer: Timer?
     // 动画进行中不切换展开状态，避免半途改变目标尺寸
     private var animating = false
+    // 窗口尺寸按显示器节拍逐帧推进，AppKit 自带的动画在这种小窗口上只给得出 20 来帧
+    private var frameAnimator: PanelFrameAnimator?
     // 判定区域按状态缓存：轮询每秒 60 次，不必每次都重算屏幕与窗口矩形
     private var cachedRegions: (expanded: Bool, expand: NSRect, collapse: NSRect)?
     private var regionsDirty = true
@@ -401,31 +403,34 @@ final class IslandController {
 
         lastFrameChangeAt = Date()
         regionsDirty = true
-        guard target != panel.frame else { return }
+        if frameAnimator?.target == target { return }
+        guard target != panel.frame || frameAnimator?.isRunning == true else { return }
         guard animated && settings.animations && panel.isVisible else {
+            frameAnimator?.stop()
+            animating = false
             panel.setFrame(target, display: true)
             return
         }
         animating = true
         onAnimationChanged?(true)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = Double(settings.animationDuration) / 1000
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
-            panel.animator().setFrame(target, display: true)
-        } completionHandler: { [weak self] in
-            // 动画被打断时也要落到目标位置
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                if self.panel.frame != target {
-                    self.panel.setFrame(target, display: true)
-                }
-                self.lastFrameChangeAt = Date()
-                self.animating = false
-                self.onAnimationChanged?(false)
-                // 动画期间指针可能已经移动，落位后立刻按当前位置判定一次
-                self.pollPointer()
-            }
+        // 展开面板的视图树第一次构建要几十毫秒，先在窗口还没动之前把这笔开销付掉，
+        // 动画的每一帧就只剩按新尺寸重排
+        layoutContentNow()
+        let animator = frameAnimator ?? PanelFrameAnimator(window: panel)
+        frameAnimator = animator
+        animator.animate(to: target, duration: Double(settings.animationDuration) / 1000) { [weak self] in
+            guard let self else { return }
+            self.lastFrameChangeAt = Date()
+            self.animating = false
+            self.onAnimationChanged?(false)
+            // 动画期间指针可能已经移动，落位后立刻按当前位置判定一次
+            self.pollPointer()
         }
+    }
+
+    // 立刻把当前内容按现有尺寸布局一遍：用来在动画之前付掉视图树的构建开销
+    func layoutContentNow() {
+        container?.layoutSubtreeIfNeeded()
     }
 
     func show() {

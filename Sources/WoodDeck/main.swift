@@ -8,7 +8,7 @@ let diagnosticFlags = ["--watchtest", "--sessiontest", "--conversationtest", "--
                        "--lyricswichtest", "--lyricfadetest", "--monitortest", "--memunittest",
                        "--marqueetest", "--marqueevisible", "--musicrender", "--monitorrender", "--pagetest",
                        "--shots", "--themetest", "--marqueepixeltest", "--usagecost", "--notifytest",
-                       "--hookfeedback", "--sheetfeedback", "--lyricstest", "--drift"]
+                       "--hookfeedback", "--sheetfeedback", "--lyricstest", "--drift", "--animtest"]
 if ProcessInfo.processInfo.environment["WOODDECK_HOOK_SOCKET"] == nil,
    CommandLine.arguments.contains(where: { diagnosticFlags.contains($0) }) {
     let temp = FileManager.default.temporaryDirectory
@@ -187,6 +187,12 @@ if CommandLine.arguments.contains("--popuptest") {
 
 if CommandLine.arguments.contains("--themetest") {
     MainActor.assumeIsolated { ThemeTest.run() }
+    exit(0)
+}
+
+if CommandLine.arguments.contains("--animtest") {
+    let arguments = CommandLine.arguments
+    MainActor.assumeIsolated { AnimTest.run(arguments: arguments) }
     exit(0)
 }
 
