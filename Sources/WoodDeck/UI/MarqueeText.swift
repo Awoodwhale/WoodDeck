@@ -115,6 +115,9 @@ struct MarqueeText: View {
 // 歌词切换的过渡容器：文本一变就在旧句与新句之间做淡入淡出，
 // 这样「短句换成长句」时不会看到位置与内容的硬切。位移由 CATextLayer 负责，按刷新率平滑且几乎不耗 CPU
 struct LyricLineText: View {
+    // 收起条刚换上时内容也按这个节奏淡入，与换句一致
+    static let fadeDuration: Double = 0.32
+
     var text: String
     var font: Font
     var color: Color
@@ -135,6 +138,6 @@ struct LyricLineText: View {
                 .transition(.opacity)
                 .allowsHitTesting(false)
         }
-        .animation(.easeInOut(duration: 0.32), value: text)
+        .animation(.easeInOut(duration: Self.fadeDuration), value: text)
     }
 }

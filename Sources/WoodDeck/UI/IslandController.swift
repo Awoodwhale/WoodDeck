@@ -125,6 +125,7 @@ final class IslandController {
     private var hiddenByRule = false
 
     var isExpanded: Bool { expanded }
+    var isAnimating: Bool { animating }
     // 自检用：丢弃待执行的展开，模拟每次都是新进入
     func cancelPendingOpenForTest() {
         openWork?.cancel()

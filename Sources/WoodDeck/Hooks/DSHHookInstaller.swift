@@ -113,25 +113,27 @@ enum DSHHookInstaller {
         profile.directory.appending(path: pluginDirectoryName).appending(path: "index.mjs")
     }
 
-    // 插件源码：优先用应用包里的副本，开发期回退到源码树
+    // 插件源码：应用包里自带一份。直接运行编译出的可执行文件（自检）时没有应用包，才读源码树。
+    // 应用包内绝不去读源码树：源码可能在「下载」等受保护的目录里，读取会被系统授权弹窗卡住主线程
     static func pluginSource() throws -> String {
-        var candidates: [URL] = []
-        if let resources = Bundle.main.resourceURL {
-            candidates.append(resources.appending(path: "dsh-plugin/index.mjs"))
-        }
-        let source = URL(filePath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appending(path: "Resources/dsh-plugin/index.mjs")
-        candidates.append(source)
-        for candidate in candidates {
-            if let text = try? String(contentsOf: candidate, encoding: .utf8), !text.isEmpty {
-                return text
+        let candidate: URL
+        if Bundle.main.bundleIdentifier != nil {
+            guard let resources = Bundle.main.resourceURL else {
+                throw ProviderError.message(Loc.t("应用包缺少资源目录", "The app bundle has no resources directory"))
             }
+            candidate = resources.appending(path: "dsh-plugin/index.mjs")
+        } else {
+            candidate = URL(filePath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appending(path: "Resources/dsh-plugin/index.mjs")
         }
-        throw ProviderError.message(Loc.t("没有找到插件源码 dsh-plugin/index.mjs", "The plugin source dsh-plugin/index.mjs was not found"))
+        if let text = try? String(contentsOf: candidate, encoding: .utf8), !text.isEmpty {
+            return text
+        }
+        throw ProviderError.message(Loc.t("没有找到插件源码 \(candidate.path)", "The plugin source was not found at \(candidate.path)"))
     }
 
     @discardableResult

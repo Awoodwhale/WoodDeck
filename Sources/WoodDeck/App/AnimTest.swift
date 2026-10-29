@@ -29,6 +29,25 @@ enum AnimTest {
 
     @MainActor
     static func run(arguments: [String]) {
+        // capsule / notch：临时换成指定的收起样式测一遍；below：刘海样式改用整条向下延伸的排版。结束后恢复用户原来的设置
+        let originalStyle = SettingsStore.shared.settings.style
+        let originalLayout = SettingsStore.shared.settings.notchLayout
+        if arguments.contains("capsule") {
+            SettingsStore.shared.update { $0.style = .capsule }
+        } else if arguments.contains("notch") {
+            SettingsStore.shared.update { $0.style = .notch }
+        }
+        if arguments.contains("below") {
+            SettingsStore.shared.update { $0.notchLayout = .below }
+        }
+        defer {
+            if SettingsStore.shared.settings.style != originalStyle || SettingsStore.shared.settings.notchLayout != originalLayout {
+                SettingsStore.shared.update {
+                    $0.style = originalStyle
+                    $0.notchLayout = originalLayout
+                }
+            }
+        }
         let settings = SettingsStore.shared.settings
         let model = DeckModel.shared
         model.start()
@@ -62,6 +81,12 @@ enum AnimTest {
             return
         }
 
+        if arguments.contains("collapse") {
+            // pixels：动画中途截图检查面板是否只剩纯色底。截图本身很慢，会拉长那几帧的间隔
+            collapseReport(settings: settings, model: model, checkPixels: arguments.contains("pixels"))
+            return
+        }
+
         if arguments.contains("swap") {
             let warm = arguments.contains("warm")
             for page in pages {
@@ -84,6 +109,196 @@ enum AnimTest {
                 measure(page: page, settings: settings, model: model, driver: driver)
             }
         }
+    }
+
+    // 收起过程中收起条里的歌词在屏幕上的位置：与真实面板一样，窗口从展开矩形缩回收起矩形，
+    // 收起条按窗口尺寸布局。逐帧记录歌词层相对摄像头中线与屏幕顶边的偏移
+    @MainActor
+    private static func collapseReport(settings: DeckSettings, model: DeckModel, checkPixels: Bool) {
+        guard let screen = NSScreen.screens.first else { return }
+        // 歌词要等媒体流与歌词查询都回来
+        let lyricDeadline = Date().addingTimeInterval(10)
+        while Date() < lyricDeadline && model.compactContent().musicText.isEmpty {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        }
+        let controller = IslandController()
+        let expandedReal = controller.expandedFrame(settings: settings, screen: screen)
+        let compactReal = controller.compactFrame(settings: settings, style: settings.style, screen: screen)
+        let geometry = CompactGeometry.compact(settings, style: settings.style, metrics: ScreenMetrics.of(screen))
+        // 摄像头中线（分列时）或收起条中线：收起之后歌词应当停在的参照
+        let anchorX = geometry.splitLeft > 0 ? compactReal.minX + geometry.splitLeft + geometry.splitNotch / 2 : compactReal.midX
+        let screenTop = screen.frame.maxY
+
+        // 窗口整体平移到主屏左下角，相对几何不变；透明度为 0，用户看不到
+        let shift = NSPoint(x: screen.frame.minX + 20 - compactReal.minX, y: screen.frame.minY + 20 - expandedReal.minY)
+        func moved(_ rect: NSRect) -> NSRect { rect.offsetBy(dx: shift.x, dy: shift.y) }
+        let expandedRect = moved(expandedReal)
+        let compactRect = moved(compactReal)
+        let movedAnchorX = anchorX + shift.x
+        let movedTop = screenTop + shift.y
+
+        let content = model.compactContent()
+        // 与应用一致：根视图开始时停在展开面板，窗口缩回收起矩形后才换成收起条
+        let state = DeckAppState()
+        state.page = .quota
+        state.expanded = true
+        let root = IslandRootView(model: model,
+                                  state: state,
+                                  onMusicCommand: { _ in },
+                                  onSeek: { _ in },
+                                  onDetails: { _, _ in },
+                                  onExpandRequest: {})
+        let hosting = ProbeHosting(rootView: AnyView(root))
+        hosting.frame = NSRect(origin: .zero, size: expandedRect.size)
+        let container = NSView(frame: NSRect(origin: .zero, size: expandedRect.size))
+        container.clipsToBounds = true
+        hosting.autoresizingMask = [.width, .height]
+        container.addSubview(hosting)
+        let window = NSWindow(contentRect: expandedRect, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.backgroundColor = NSColor.clear
+        window.isOpaque = false
+        window.hasShadow = false
+        window.alphaValue = 0
+        window.animationBehavior = NSWindow.AnimationBehavior.none
+        window.ignoresMouseEvents = true
+        window.contentView = container
+        window.orderFrontRegardless()
+        defer { window.orderOut(nil) }
+        hosting.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+
+        func lyricView(in view: NSView) -> NSView? {
+            if view is MarqueeLayerView { return view }
+            for child in view.subviews {
+                if let found = lyricView(in: child) { return found }
+            }
+            return nil
+        }
+
+        // 屏幕上实际看到的不透明度：沿父视图把各层正在显示的不透明度乘起来
+        func visibleOpacity(_ view: NSView) -> Float {
+            var current: NSView? = view
+            var opacity: Float = 1
+            while let item = current, item !== container {
+                opacity *= Float(item.alphaValue)
+                if let layer = item.layer {
+                    opacity *= layer.presentation()?.opacity ?? layer.opacity
+                }
+                current = item.superview
+            }
+            return opacity
+        }
+
+        // 截一帧：和底色明显不同的像素数（为 0 说明只画了纯色底），以及顶边最左侧空出的宽度（点）。
+        // 刘海样式收起时，顶部圆角应随高度缩小逐渐变成直角，空出的宽度逐渐变为 0
+        let panelColor = PanelThemeCatalog.palette(id: settings.panelTheme).panelColor
+        struct Shot {
+            var height: CGFloat
+            var content: Int
+            var topGap: CGFloat
+        }
+        func shot() -> Shot? {
+            hosting.layoutSubtreeIfNeeded()
+            guard let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds),
+                  let base = NSColor(panelColor).usingColorSpace(.sRGB) else { return nil }
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            var count = 0
+            for y in stride(from: 0, to: bitmap.pixelsHigh, by: 2) {
+                for x in stride(from: 0, to: bitmap.pixelsWide, by: 2) {
+                    guard let pixel = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB), pixel.alphaComponent > 0.5 else { continue }
+                    let diff = abs(pixel.redComponent - base.redComponent) + abs(pixel.greenComponent - base.greenComponent) + abs(pixel.blueComponent - base.blueComponent)
+                    if diff > 0.1 { count += 1 }
+                }
+            }
+            var gap = 0
+            while gap < bitmap.pixelsWide, (bitmap.colorAt(x: gap, y: 0)?.alphaComponent ?? 0) < 0.5 { gap += 1 }
+            let scale = CGFloat(bitmap.pixelsWide) / max(hosting.bounds.width, 1)
+            return Shot(height: hosting.bounds.height, content: count, topGap: CGFloat(gap) / scale)
+        }
+        let before = checkPixels ? shot() : nil
+
+        struct Sample {
+            var at: Double
+            var window: NSRect
+            // 只在收起条已经显示时记录歌词位置
+            var lyric: NSRect?
+            var compactShown: Bool
+        }
+        var samples: [Sample] = []
+        var shots: [Shot] = []
+        let begin = CACurrentMediaTime()
+        func record() {
+            hosting.layoutSubtreeIfNeeded()
+            let shown = !state.expanded
+            let lyric = shown ? lyricView(in: hosting).map { view in
+                window.convertToScreen(view.convert(view.bounds, to: nil))
+            } : nil
+            samples.append(Sample(at: (CACurrentMediaTime() - begin) * 1000, window: window.frame, lyric: lyric, compactShown: shown))
+            if checkPixels, let item = shot() { shots.append(item) }
+        }
+        let observer = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification,
+                                                             object: window,
+                                                             queue: nil) { _ in
+            MainActor.assumeIsolated { record() }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        // 与 AppDelegate.showExpanded(false) 相同：开始收起时只留纯色底
+        state.collapseFromHeight = expandedRect.height
+        state.collapseToHeight = compactRect.height
+        state.collapsing = true
+        record()
+        hosting.passes = []
+        hosting.recording = true
+        var finished = false
+        let animator = PanelFrameAnimator(window: window)
+        animator.animate(to: compactRect, duration: Double(settings.animationDuration) / 1000) {
+            finished = true
+        }
+        let wait = Date().addingTimeInterval(3)
+        while !finished && Date() < wait {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.004))
+        }
+        hosting.recording = false
+        let animationFrames = samples.count
+        let compactDuringAnimation = samples.filter(\.compactShown).count
+        // 窗口到达收起尺寸后换成收起条，与 AppDelegate.finishCollapse 相同
+        let swap = CACurrentMediaTime()
+        state.expanded = false
+        state.collapsing = false
+        record()
+        let swapCost = (CACurrentMediaTime() - swap) * 1000
+        var fade: [(Double, Float)] = []
+        while CACurrentMediaTime() - swap < 0.5 {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.04))
+            if let view = lyricView(in: hosting) {
+                fade.append(((CACurrentMediaTime() - swap) * 1000, visibleOpacity(view)))
+            }
+        }
+
+        print("收起：\(Int(expandedRect.width))×\(Int(expandedRect.height)) → \(Int(compactRect.width))×\(Int(compactRect.height))，当前歌词「\(content.musicText)」")
+        print("动画期间 \(animationFrames) 帧，其中显示收起条的帧数 \(compactDuringAnimation)")
+        if checkPixels, let before {
+            print(String(format: "收起前（展开面板）：与底色不同的像素 %d，顶边左侧空出 %.1f 点", before.content, before.topGap))
+            for (index, item) in shots.enumerated() {
+                let label = index == shots.count - 1 ? "换上收起条" : "第 \(index) 帧"
+                print(String(format: "  %@ 高 %.1f：与底色不同的像素 %d，顶边左侧空出 %.1f 点", label, item.height, item.content, item.topGap))
+            }
+        }
+        print("换上收起条后歌词的不透明度：" + fade.map { String(format: "%.0f 毫秒 %.2f", $0.0, $0.1) }.joined(separator: "，"))
+        let times = samples.prefix(animationFrames).map(\.at)
+        let gaps = zip(times.dropFirst(), times).map { $0 - $1 }
+        if !gaps.isEmpty {
+            print(String(format: "改尺寸间隔 平均 %.1f 毫秒 最大 %.1f 毫秒，超过 16 毫秒 %d 次；动画时长 %.0f 毫秒",
+                         gaps.reduce(0, +) / Double(gaps.count), gaps.max() ?? 0, gaps.filter { $0 > 16 }.count, times.last ?? 0))
+        }
+        print(String(format: "动画结束后换成收起条耗时 %.2f 毫秒", swapCost))
+        guard let final = samples.last?.lyric else {
+            print("没有找到歌词层（当前没有歌词）")
+            return
+        }
+        let expected = movedAnchorX - geometry.splitNotch / 2 - geometry.splitLeft
+        print(String(format: "换上收起条的第一帧：歌词左边相对摄像头中线 %+.1f 点，中线距屏幕顶边 %.1f 点；收起条左边缘 %+.1f 点",
+                     final.minX - movedAnchorX, movedTop - final.midY, expected - movedAnchorX))
     }
 
     // 从收起条换成展开面板要花多久：动画开始前先付掉这笔开销，动画才不会被卡住
@@ -140,8 +355,10 @@ enum AnimTest {
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
 
         // 收起再展开：视图树已经建好，这一次只剩重排
+        let back = CACurrentMediaTime()
         state.expanded = false
         container.layoutSubtreeIfNeeded()
+        let backCost = (CACurrentMediaTime() - back) * 1000
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
         let again = CACurrentMediaTime()
         state.expanded = true
@@ -149,7 +366,7 @@ enum AnimTest {
         let againCost = (CACurrentMediaTime() - again) * 1000
 
         print("")
-        print("页面 \(page.displayName)\(warmUp ? "（启动已预热）" : "")：第一次换成展开面板并布局 \(String(format: "%.2f", firstCost)) 毫秒，第二次 \(String(format: "%.2f", againCost)) 毫秒（120 Hz 一帧 8.3）")
+        print("页面 \(page.displayName)\(warmUp ? "（启动已预热）" : "")：第一次换成展开面板并布局 \(String(format: "%.2f", firstCost)) 毫秒，换回收起条 \(String(format: "%.2f", backCost)) 毫秒，第二次展开 \(String(format: "%.2f", againCost)) 毫秒（120 Hz 一帧 8.3）")
     }
 
     // 面板静止不动时的布局次数：持续重排本身就会让动画掉帧

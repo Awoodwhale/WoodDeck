@@ -180,6 +180,9 @@ WoodDeck.app/Contents/MacOS/WoodDeck --dsh-hook status           # install / uni
 .build/release/WoodDeck --lyricfadetest   # 核对歌词换句的淡入淡出
 .build/release/WoodDeck --animtest        # 测展开收起的动画节拍、布局耗时与静止时的重排次数
 .build/release/WoodDeck --animtest swap   # 测从收起条换成展开面板的耗时（加 warm 看启动预热后的结果）
+.build/release/WoodDeck --animtest collapse  # 测收起过程：动画期间是否露出收起条、换上收起条那一帧歌词的位置与淡入过程
+.build/release/WoodDeck --animtest collapse capsule pixels  # 用胶囊样式测一遍，并逐帧截图检查是否只剩纯色底、顶边左侧空出的宽度（截图会拉长那几帧）
+.build/release/WoodDeck --animtest collapse notch below pixels  # 刘海样式改用向下延伸的排版测一遍，结束后恢复原来的样式与排版
 .build/release/WoodDeck --lyricstest "晴天|周杰伦|叶惠美|269"   # 打印歌词来自哪一家、行数与耗时
 .build/release/WoodDeck --lyricstest --lyricsource netease "晴天|周杰伦|叶惠美|269"   # 只查某一家
 .build/release/WoodDeck --lyricstest --prefer netease "晴天|周杰伦|叶惠美|269"        # 按播放源决定顺序

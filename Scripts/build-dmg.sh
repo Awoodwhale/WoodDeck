@@ -84,6 +84,14 @@ if [ -f Resources/AppIcon.icns ]; then
 	SetFile -a C "$MOUNT_DIR"
 fi
 
+# Finder 窗口打开期间，粘贴或拖进窗口的东西会直接写进镜像。卷里只允许出现应用与「应用程序」快捷方式
+UNEXPECTED="$(ls -A "$MOUNTPOINT" | grep -vxE "$APP_NAME|Applications|\.DS_Store|\.VolumeIcon\.icns|\.fseventsd|\.Trashes" || true)"
+if [ -n "$UNEXPECTED" ]; then
+	echo "镜像里出现了不该有的文件，停止打包：" >&2
+	echo "$UNEXPECTED" >&2
+	exit 1
+fi
+
 sync
 if ! hdiutil detach "$MOUNTPOINT" >/dev/null; then
 	echo "卸载失败，等待 2 秒后重试" >&2

@@ -6,6 +6,16 @@ import SwiftUI
 enum HoverTest {
     static func run(mode: String) {
         IslandController.pointerTestMode = true
+        // 自检要改悬停方式、延迟与样式，结束后把用户原来的值写回去
+        let original = SettingsStore.shared.settings
+        defer {
+            SettingsStore.shared.update {
+                $0.expandTrigger = original.expandTrigger
+                $0.openDelay = original.openDelay
+                $0.closeDelay = original.closeDelay
+                $0.style = original.style
+            }
+        }
         SettingsStore.shared.update {
             $0.expandTrigger = .hover
             $0.openDelay = 300

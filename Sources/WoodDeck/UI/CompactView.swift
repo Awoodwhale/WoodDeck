@@ -58,6 +58,10 @@ struct CompactIslandView: View {
     private var palette: PanelPalette { PanelThemeCatalog.palette(id: themeID) }
     private var scale: CGFloat { CGFloat(min(max(content.scale, 0.75), 2)) }
 
+    // 收起条换上时底色立刻出现，与缩回来的纯色面板接上；文字与图标按换句的节奏淡入
+    @State private var contentShown = false
+    private var contentOpacity: Double { contentShown ? 1 : 0 }
+
     var body: some View {
         GeometryReader { geometry in
             let size = geometry.size
@@ -66,6 +70,9 @@ struct CompactIslandView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture { onTap() }
+        .onAppear {
+            withAnimation(.easeInOut(duration: LyricLineText.fadeDuration)) { contentShown = true }
+        }
     }
 
     @ViewBuilder
@@ -101,6 +108,7 @@ struct CompactIslandView: View {
                         row(size: size)
                     }
                     .padding(.horizontal, CollapsedLimits.notchInset * scale)
+                    .opacity(contentOpacity)
                 }
             }
         case .capsule:
@@ -109,6 +117,7 @@ struct CompactIslandView: View {
                 row(size: size)
                     .padding(.top, content.contentTopPadding)
                     .padding(.horizontal, CollapsedLimits.capsuleInset * scale)
+                    .opacity(contentOpacity)
             }
         }
     }
@@ -124,6 +133,7 @@ struct CompactIslandView: View {
                 Color.clear.frame(width: content.splitNotch)
                 splitSegment(width: content.splitRight, alignment: .leading, isLeft: false)
             }
+            .opacity(contentOpacity)
         }
     }
 
@@ -357,6 +367,54 @@ struct SplitNotchShape: Shape {
         path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.maxY - radius),
                           control: CGPoint(x: rect.maxX, y: rect.maxY))
         path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+// 收起过程中的空白面板：按当前高度在展开面板与收起条之间连续变形。
+// 刘海样式下顶部圆角随窗口缩回逐渐变成直角，底部圆角与肩部过渡到收起条的形状，
+// 到达收起高度时与 NotchShape / SplitNotchShape 完全一致
+struct CollapsingPanelShape: Shape {
+    var style: CompactStyle
+    var split: Bool
+    var fromHeight: CGFloat
+    var toHeight: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        guard style == .notch else {
+            return RoundedRectangle(cornerRadius: min(Theme.cornerRadius, rect.height / 2), style: .continuous).path(in: rect)
+        }
+        // 1 表示仍是展开面板的形状，0 表示已经是收起条的形状
+        let span = fromHeight - toHeight
+        let progress = span > 0 ? min(max((rect.height - toHeight) / span, 0), 1) : 0
+        let endBottom = split ? Theme.splitCorner : CGFloat(CollapsedLimits.notchCorner)
+        let endShoulder = split ? 0 : CGFloat(CollapsedLimits.notchShoulder)
+        // 展开面板用的是 SwiftUI 连续圆角，弧线比同半径的二次曲线延伸得更远
+        // （半径 22 时顶边空出 23.5 点，二次曲线只有 18 点），起点按这个比例放大，开始收起时形状才接得上
+        let startRadius = Theme.cornerRadius * 1.3
+        let shoulder = min(endShoulder * (1 - progress), rect.width / 4)
+        let top = min(startRadius * progress, rect.height / 2, rect.width / 4)
+        let bottomLimit = split ? rect.height : rect.height / 2
+        let bottom = min(endBottom + (startRadius - endBottom) * progress, bottomLimit, rect.width / 4)
+        let left = rect.minX + shoulder
+        let right = rect.maxX - shoulder
+        let topReach = max(top, shoulder)
+
+        var path = Path()
+        // 左上：顶部圆角与肩部共用一段曲线，圆角为 0 时即收起条的肩部，肩部为 0 时即展开面板的圆角
+        path.move(to: CGPoint(x: rect.minX + top, y: rect.minY))
+        path.addQuadCurve(to: CGPoint(x: left, y: rect.minY + topReach),
+                          control: CGPoint(x: left, y: rect.minY))
+        path.addLine(to: CGPoint(x: left, y: rect.maxY - bottom))
+        path.addQuadCurve(to: CGPoint(x: left + bottom, y: rect.maxY),
+                          control: CGPoint(x: left, y: rect.maxY))
+        path.addLine(to: CGPoint(x: right - bottom, y: rect.maxY))
+        path.addQuadCurve(to: CGPoint(x: right, y: rect.maxY - bottom),
+                          control: CGPoint(x: right, y: rect.maxY))
+        path.addLine(to: CGPoint(x: right, y: rect.minY + topReach))
+        path.addQuadCurve(to: CGPoint(x: rect.maxX - top, y: rect.minY),
+                          control: CGPoint(x: right, y: rect.minY))
         path.closeSubpath()
         return path
     }

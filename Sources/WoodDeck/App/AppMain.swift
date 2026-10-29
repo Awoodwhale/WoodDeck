@@ -5,6 +5,11 @@ import ServiceManagement
 @MainActor
 final class DeckAppState: ObservableObject {
     @Published var expanded = false
+    // 正在从展开面板缩回收起条：这段时间只画空白的面板底色
+    @Published var collapsing = false
+    // 收起动画起止的窗口高度，空白面板据此在两种形状之间变形
+    @Published var collapseFromHeight: CGFloat = 0
+    @Published var collapseToHeight: CGFloat = 0
     @Published var page: DeckPage = .quota
     @Published var showingSettings = false
 }
@@ -22,7 +27,14 @@ struct IslandRootView: View {
 
     var body: some View {
         Group {
-            if state.expanded {
+            if state.expanded && state.collapsing {
+                let content = model.compactContent()
+                CollapsingPanelShape(style: content.style,
+                                     split: content.splitLeft > 0,
+                                     fromHeight: state.collapseFromHeight,
+                                     toHeight: state.collapseToHeight)
+                    .fill(PanelThemeCatalog.palette(id: model.settings.panelTheme).panelColor)
+            } else if state.expanded {
                 expandedPanel
             } else {
                 CompactIslandView(content: model.compactContent(),
@@ -113,10 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 点击收起形态时展开：点击事件在 AppKit 层处理，非激活面板也能收到
         // 打开设置时收起灵动岛，避免它盖在设置窗口上
         SettingsWindowController.shared.onWillShow = { [weak self] in
-            guard let self else { return }
-            self.island.collapse()
-            self.state.expanded = false
-            self.reflow(animated: true)
+            self?.island.collapse()
         }
         // 悬停或点击左段进音乐页，右段进设置的页面
         island.onOpenRequest = { [weak self] page in
@@ -127,16 +136,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         island.onTapRequest = { [weak self] in
             guard let self else { return }
-            self.state.expanded = self.island.isExpanded
-            self.reflow(animated: true)
+            self.showExpanded(self.island.isExpanded)
         }
-        island.onAnimationChanged = { [model] animating in
-            model.panelAnimating = animating
+        island.onAnimationChanged = { [weak self] animating in
+            guard let self else { return }
+            self.model.panelAnimating = animating
+            if !animating { self.finishCollapse() }
         }
         island.onExpandChanged = { [weak self] expanded in
-            guard let self else { return }
-            self.state.expanded = expanded
-            self.reflow(animated: true)
+            self?.showExpanded(expanded)
         }
 
         installContent()
@@ -212,6 +220,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         island.layoutContentNow()
         state.expanded = wasExpanded
         island.layoutContentNow()
+    }
+
+    // 展开时先换成展开面板再放大窗口；收起时先把面板内容清空成纯色底，随窗口一起缩回，
+    // 窗口到达收起尺寸后才换成收起条，收起条的内容再淡入。若在大窗口里就换成收起条，
+    // 它会按大窗口居中排版，歌词从离终点九十多点的位置一路追回来
+    private func showExpanded(_ expanded: Bool) {
+        if expanded {
+            state.collapsing = false
+            state.expanded = true
+            reflow(animated: true)
+            return
+        }
+        if state.expanded {
+            let screen = activeScreen()
+            state.collapseFromHeight = island.expandedFrame(settings: model.settings, screen: screen).height
+            state.collapseToHeight = island.compactFrame(settings: model.settings,
+                                                         style: island.effectiveStyle(model.settings),
+                                                         screen: screen).height
+            state.collapsing = true
+        }
+        reflow(animated: true)
+        if !island.isAnimating {
+            finishCollapse()
+        }
+    }
+
+    private func finishCollapse() {
+        guard state.expanded, !island.isExpanded else { return }
+        state.expanded = false
+        state.collapsing = false
+        reflow(animated: false)
     }
 
     private func reflow(animated: Bool) {

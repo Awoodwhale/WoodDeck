@@ -15,5 +15,7 @@ cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp -R Resources/MediaRemoteAdapter "$APP/Contents/Resources/MediaRemoteAdapter"
 chmod +x "$APP/Contents/Resources/MediaRemoteAdapter/mediaremote-adapter.pl"
+# DSH 插件源码：打开 DSH 会话读取时写进各个 profile
+cp -R Resources/dsh-plugin "$APP/Contents/Resources/dsh-plugin"
 codesign --force --deep --sign - "$APP"
 echo "已生成 $(pwd)/$APP"
