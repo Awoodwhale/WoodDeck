@@ -32,6 +32,12 @@ struct SessionRow: View {
 
     @State private var hovering = false
 
+    // 第二行：有会话名称时先写项目名，再接最新消息
+    private var detailText: String {
+        guard !session.name.isEmpty else { return session.message }
+        return session.message.isEmpty ? session.projectName : "\(session.projectName) · \(session.message)"
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: session.agent.symbol)
@@ -40,7 +46,8 @@ struct SessionRow: View {
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
-                    Text(session.projectName)
+                    // 会话名称放在最前面，同一项目里的多个会话靠它区分
+                    Text(session.displayName)
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.white.opacity(0.9))
                         .lineLimit(1)
@@ -58,8 +65,8 @@ struct SessionRow: View {
                         .font(.system(size: 9))
                         .foregroundStyle(.white.opacity(0.3))
                 }
-                if !session.message.isEmpty {
-                    Text(session.message)
+                if !detailText.isEmpty {
+                    Text(detailText)
                         .font(.system(size: 10))
                         .foregroundStyle(.white.opacity(0.5))
                         .lineLimit(1)

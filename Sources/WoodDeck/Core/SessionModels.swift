@@ -114,6 +114,10 @@ struct AgentSession: Identifiable, Codable, Sendable {
     var project: String
     var cwd: String
     var title: String
+    // 会话名称：助手自己给出的标题，没有标题时用第一句提问
+    var name: String = ""
+    // name 来自助手给出的标题时为 true，之后不再被提问文本覆盖
+    var nameIsTitle: Bool = false
     var message: String
     var tool: String
     var status: SessionStatus
@@ -128,6 +132,16 @@ struct AgentSession: Identifiable, Codable, Sendable {
         return path.isEmpty ? Loc.t("未知项目", "Unknown project") : (path as NSString).lastPathComponent
     }
 
+    // 区分同一项目里多个会话用的名称；拿不到名称时退回项目名
+    var displayName: String {
+        name.isEmpty ? projectName : name
+    }
+
+    // 「项目 · 会话名」，名称缺失时只有项目名
+    var fullName: String {
+        name.isEmpty ? projectName : "\(projectName) · \(name)"
+    }
+
     var ageText: String {
         Loc.ago(updatedAt)
     }
@@ -140,6 +154,8 @@ struct AgentEvent: Codable, Sendable {
     var session: String
     var cwd: String
     var title: String
+    // 会话名称（助手给出的会话标题），没有时为空
+    var name: String = ""
     var message: String
     var tool: String
     var pid: Int?

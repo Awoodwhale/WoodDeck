@@ -108,11 +108,17 @@ final class IslandController {
     // 最近一次展开的时刻，用于抑制刚展开就收起的抖动
     private var lastExpandAt = Date.distantPast
     private var attentionHoldUntil: Date?
+    // 提醒展开时指针所在的位置；非空表示面板只做提示、不接收点击，指针移动到岛上之后清空
+    private var passivePoint: NSPoint?
     // 自检用：不显示面板也能切换展开状态
     func setExpandedForTest(_ value: Bool) {
         guard Self.pointerTestMode else { return }
         expanded = value
         regionsDirty = true
+    }
+    // 自检用：面板此刻是否持有键盘焦点、是否让点击穿过
+    var panelInputStateForTest: (isKey: Bool, ignoresMouse: Bool) {
+        (panel.isKeyWindow, panel.ignoresMouseEvents)
     }
     private var openWork: DispatchWorkItem?
     // 已排程的展开目标页：指针停在同一段时不必每帧重建定时器
@@ -186,6 +192,8 @@ final class IslandController {
     // 全局监听拿到的点击：落在面板上就展开或收起
     private func pointerClicked(at point: NSPoint) {
         guard panel.isVisible, !hiddenByRule else { return }
+        // 提醒展开还没被接手时，点击穿过面板属于下面的应用，不要拿来开合面板
+        guard passivePoint == nil else { return }
         guard panel.frame.contains(point) else { return }
         if expanded {
             collapse()
@@ -281,6 +289,17 @@ final class IslandController {
         guard !animating else { return }
 
         if collapseRegion.contains(point) {
+            if let origin = passivePoint {
+                // 提醒弹出时指针恰好停在岛上：没有移动就不算用户来操作，保持只提示
+                guard point == origin else {
+                    endPassive()
+                    attentionHoldUntil = nil
+                    pointerInside = true
+                    return
+                }
+                if expanded, !attentionHeld { collapse() }
+                return
+            }
             // 指针回到岛上：由指针接管，提醒期间的保持到此为止
             attentionHoldUntil = nil
             // 仍在区域内：未展开时按停留时间排程展开
@@ -399,7 +418,7 @@ final class IslandController {
         let target = expanded ? expandedFrame(settings: settings, screen: screen)
                               : compactFrame(settings: settings, style: style, screen: screen)
         let visible = !hiddenByRule
-        panel.ignoresMouseEvents = !visible
+        panel.ignoresMouseEvents = !visible || passivePoint != nil
         panel.alphaValue = visible ? 1 : 0
 
         lastFrameChangeAt = Date()
@@ -516,15 +535,49 @@ final class IslandController {
         guard !expanded, !hiddenByRule else { return }
         expanded = true
         lastExpandAt = Date()
-        // 展开后取得键盘焦点，Esc 才能收起面板
-        panel.makeKeyAndOrderFront(nil)
+        // 展开时不取得键盘焦点：用户正在别的应用里打字时，按键不能被面板截走。
+        // 面板只在用户点击它之后才成为键盘窗口，此后 Esc 可以收起
+        if !Self.pointerTestMode { panel.orderFrontRegardless() }
         if let requestedPage {
             onOpenRequest?(requestedPage)
         }
         onExpandChanged?(true)
     }
 
-    // 会话提醒触发的展开：指针不在岛上时也保持一段时间，否则下一帧轮询就会收起
+    // 会话提醒触发的展开：只做提示。面板不取得焦点，鼠标点击穿过面板交给下面的应用，
+    // 直到指针真正移到岛上才交给用户操作；指针不在岛上时保持一段时间，否则下一帧轮询就会收起
+    func expandForAttention(requestedPage: DeckPage?, holdFor seconds: TimeInterval) {
+        guard !hiddenByRule else { return }
+        if expanded {
+            // 面板已经开着：用户正在用时不打扰，上一次提醒还没被接手时续期
+            if passivePoint != nil { holdExpansion(for: seconds) }
+            return
+        }
+        passivePoint = Self.pointerTestMode ? lastPointerPoint : NSEvent.mouseLocation
+        panel.ignoresMouseEvents = true
+        holdExpansion(for: seconds)
+        expand(requestedPage: requestedPage)
+    }
+
+    // 提醒对应的会话已经在助手里处理完：还没被用户接手的提醒展开立刻收起
+    func releaseAttention() {
+        guard passivePoint != nil else { return }
+        attentionHoldUntil = nil
+        if expanded {
+            collapse()
+        } else {
+            endPassive()
+        }
+    }
+
+    // 提醒展开是否还在「只提示、不接收点击」的阶段
+    var isPassive: Bool { passivePoint != nil }
+
+    private func endPassive() {
+        passivePoint = nil
+        panel.ignoresMouseEvents = hiddenByRule
+    }
+
     func holdExpansion(for seconds: TimeInterval) {
         holdExpansion(until: Date().addingTimeInterval(max(1, seconds)))
     }
@@ -540,6 +593,7 @@ final class IslandController {
 
     func collapse() {
         attentionHoldUntil = nil
+        endPassive()
         guard expanded else { return }
         expanded = false
         regionsDirty = true

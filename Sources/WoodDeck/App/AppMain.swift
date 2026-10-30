@@ -95,6 +95,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var fullscreenTimer: Timer?
     private var hotkeyIDs: [UInt32] = []
     private var screenObserver: NSObjectProtocol?
+    // 触发这次提醒展开的会话，这个会话被处理后才收起
+    private var attentionSessionID: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -107,11 +109,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.model.flashSession(session)
             guard self.model.settings.sessionNotifications.autoExpand else { return }
             let target = self.availablePages.contains(.sessions) ? DeckPage.sessions : (self.availablePages.first ?? .sessions)
-            self.state.page = target
-            self.island.expand(requestedPage: target)
-            // 指针不在岛上时保持展开，等到提示消失
-            self.island.holdExpansion(for: self.model.settings.sessionNotifications.islandSeconds)
+            // 用户正在用展开面板时不切换页面
+            if !self.island.isExpanded { self.state.page = target }
+            // 只做提示：不取得焦点、不拦截点击，指针不在岛上时保持到提示结束
+            self.attentionSessionID = session.id
+            self.island.expandForAttention(requestedPage: target,
+                                           holdFor: self.model.settings.sessionNotifications.islandSeconds)
             self.reflow(animated: true)
+        }
+        // 用户已经在助手里处理了这个会话（批准、拒绝或继续对话）：收回提示与提醒展开
+        SessionCenter.shared.onAttentionCleared = { [weak self] session in
+            guard let self else { return }
+            self.model.clearSessionAlert(for: session.id)
+            guard self.attentionSessionID == session.id else { return }
+            self.attentionSessionID = nil
+            self.island.releaseAttention()
         }
         SessionCenter.shared.syncHooks()
 

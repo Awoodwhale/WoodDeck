@@ -8,7 +8,8 @@ let diagnosticFlags = ["--watchtest", "--sessiontest", "--conversationtest", "--
                        "--lyricswichtest", "--lyricfadetest", "--monitortest", "--memunittest",
                        "--marqueetest", "--marqueevisible", "--musicrender", "--monitorrender", "--pagetest",
                        "--shots", "--themetest", "--marqueepixeltest", "--usagecost", "--notifytest",
-                       "--hookfeedback", "--sheetfeedback", "--lyricstest", "--drift", "--animtest"]
+                       "--hookfeedback", "--sheetfeedback", "--lyricstest", "--drift", "--animtest",
+                       "--attentiontest"]
 if ProcessInfo.processInfo.environment["WOODDECK_HOOK_SOCKET"] == nil,
    CommandLine.arguments.contains(where: { diagnosticFlags.contains($0) }) {
     let temp = FileManager.default.temporaryDirectory
@@ -162,6 +163,12 @@ if let index = CommandLine.arguments.firstIndex(of: "--hovertest") {
 // 会话提醒自动展开后能否保持
 if CommandLine.arguments.contains("--expandholdtest") {
     MainActor.assumeIsolated { HoverTest.expandHoldReport() }
+    exit(0)
+}
+
+// 会话提醒全链路：不抢焦点、处理后收回、按状态开关、会话名称
+if CommandLine.arguments.contains("--attentiontest") {
+    MainActor.assumeIsolated { AttentionTest.run() }
     exit(0)
 }
 
@@ -337,6 +344,21 @@ if CommandLine.arguments.contains("--settingstest") {
         let shown = CommandLine.arguments.contains("shown")
         for line in SettingsWindowController.shared.inspectOffscreen(shown: shown) {
             print(line)
+        }
+        if CommandLine.arguments.contains("colors") {
+            for line in SettingsColorTest.run() {
+                print(line)
+            }
+        }
+        if CommandLine.arguments.contains("sliders") {
+            for line in SettingsColorTest.sliderReport() {
+                print(line)
+            }
+        }
+        if CommandLine.arguments.contains("focus") {
+            for line in SettingsWindowController.shared.inspectFocus() {
+                print(line)
+            }
         }
     }
     exit(0)

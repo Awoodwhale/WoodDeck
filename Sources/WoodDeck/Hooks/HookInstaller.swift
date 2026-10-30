@@ -76,6 +76,8 @@ enum HookInstaller {
             HookEventSpec(event: "PostToolUse", matcher: "*"),
             HookEventSpec(event: "PostToolUseFailure", matcher: "*"),
             HookEventSpec(event: "PermissionRequest", matcher: "*"),
+            // 用户在 Claude Code 里拒绝审批时收回岛上的审批提示
+            HookEventSpec(event: "PermissionDenied", matcher: "*"),
             HookEventSpec(event: "Notification", matcher: "*"),
             HookEventSpec(event: "Stop", matcher: nil),
             HookEventSpec(event: "SubagentStop", matcher: nil)
@@ -258,19 +260,30 @@ enum HookInstaller {
         }
 
         export const WoodDeckPlugin = async ({ directory }: { directory: string }) => {
+          // 会话 id -> 会话标题，让每条事件都带上会话名称
+          const titles = new Map<string, string>()
           return {
             event: async ({ event }: { event: { type: string; properties?: Record<string, any> } }) => {
               const properties = event.properties ?? {}
+              // message.updated 的 info 是消息，会话 id 在 info.sessionID；session.* 的 info 是会话本身
+              const session = String(properties.sessionID ?? properties.info?.sessionID ?? properties.info?.id ?? "")
+              if (event.type.startsWith("session.") && typeof properties.info?.title === "string" && properties.info.title !== "") {
+                titles.set(session, properties.info.title)
+              }
               const base = {
                 cwd: directory,
-                session: String(properties.sessionID ?? properties.info?.id ?? ""),
-                message: String(properties.info?.title ?? properties.part?.text ?? ""),
-                title: String(properties.info?.title ?? ""),
+                session,
+                name: titles.get(session) ?? "",
+                message: String(properties.part?.text ?? ""),
+                title: "",
                 tool: String(properties.part?.tool ?? properties.tool ?? ""),
               }
               switch (event.type) {
                 case "session.created":
                   send({ ...base, event: "session_start" })
+                  break
+                case "session.updated":
+                  send({ ...base, event: "title" })
                   break
                 case "message.updated":
                   send({ ...base, event: "prompt" })
@@ -280,12 +293,20 @@ enum HookInstaller {
                   send({ ...base, event: event.type === "tool.execute.before" ? "tool_start" : "tool_end" })
                   break
                 case "permission.asked":
-                  send({ ...base, event: "permission_request" })
+                  send({ ...base, event: "permission_request", tool: String(properties.permission ?? base.tool) })
+                  break
+                case "permission.replied":
+                  // 用户在 opencode 里答复审批之后，岛上的审批提示随之收起
+                  send({ ...base, event: "permission_resolved", message: String(properties.reply ?? "") })
+                  break
+                case "session.error":
+                  send({ ...base, event: "error", message: String(properties.error?.data?.message ?? properties.error?.name ?? "") })
                   break
                 case "session.idle":
                   send({ ...base, event: "stop" })
                   break
                 case "session.deleted":
+                  titles.delete(session)
                   send({ ...base, event: "session_end" })
                   break
                 default:

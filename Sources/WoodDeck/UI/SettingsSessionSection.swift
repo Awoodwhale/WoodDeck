@@ -49,6 +49,32 @@ struct SessionNotificationSection: View {
             }
 
             Section {
+                SettingRow(icon: "hand.raised",
+                           title: Loc.t("等待授权", "Waiting for approval"),
+                           description: Loc.t("助手请求运行命令或修改文件，需要你批准。",
+                                              "The assistant asks to run a command or edit files.")) {
+                    SettingsSwitch(isOn: model.setting(\.sessionNotifications.alertPermission))
+                }
+                SettingRow(icon: "text.bubble",
+                           title: Loc.t("等待输入", "Waiting for input"),
+                           description: Loc.t("助手完成这一轮，等你继续。",
+                                              "The assistant finished its turn and waits for you.")) {
+                    SettingsSwitch(isOn: model.setting(\.sessionNotifications.alertInput))
+                }
+                SettingRow(icon: "exclamationmark.triangle",
+                           title: Loc.t("出错", "Error"),
+                           description: Loc.t("工具执行失败或助手报错。",
+                                              "A tool failed or the assistant reported an error.")) {
+                    SettingsSwitch(isOn: model.setting(\.sessionNotifications.alertError))
+                }
+            } header: {
+                Text(Loc.t("需要提醒的状态", "States that notify"))
+            } footer: {
+                Text(Loc.t("关掉的状态不弹提示、不发通知，只在会话页里显示。",
+                           "States turned off show only on the sessions page, without notices or notifications."))
+            }
+
+            Section {
                 SettingRow(icon: "menubar.rectangle",
                            title: Loc.t("横幅通知", "Banner notifications"),
                            description: nil) {
@@ -61,8 +87,8 @@ struct SessionNotificationSection: View {
                 }
                 SettingRow(icon: "bell.badge",
                            title: Loc.t("在岛上弹出提示", "Show a notice on the island"),
-                           description: Loc.t("会话结束或等待你处理时，岛上弹出提示信息。",
-                                              "Show a notice on the island when a session finishes or waits for you.")) {
+                           description: Loc.t("会话等你处理时，岛上弹出提示信息；你在助手里处理之后提示自动消失。",
+                                              "Show a notice on the island when a session waits for you; it goes away once you handle it in the assistant.")) {
                     SettingsSwitch(isOn: model.setting(\.sessionNotifications.islandPopup))
                 }
                 if model.settings.sessionNotifications.islandPopup {
@@ -70,8 +96,8 @@ struct SessionNotificationSection: View {
                 }
                 SettingRow(icon: "arrow.up.left.and.arrow.down.right",
                            title: Loc.t("弹出提示时自动展开", "Expand automatically with the notice"),
-                           description: Loc.t("有会话等你处理时直接展开到会话页，并保持到提示结束。",
-                                              "Open the sessions page when a session waits for you, and keep it open until the notice ends.")) {
+                           description: Loc.t("有会话等你处理时直接展开到会话页，并保持到提示结束；展开的面板不接收键盘输入和点击，移动指针到岛上后才能操作。",
+                                              "Open the sessions page when a session waits for you and keep it open until the notice ends. The panel takes no typing or clicks until you move the pointer onto the island.")) {
                     SettingsSwitch(isOn: model.setting(\.sessionNotifications.autoExpand))
                 }
                 SettingRow(icon: "bell.badge.circle",
@@ -127,9 +153,9 @@ struct SessionNotificationSection: View {
                    title: Loc.t("提示停留时长", "Notice duration"),
                    description: Loc.t("提示在岛上显示多久。", "How long the notice stays on the island.")) {
             HStack(spacing: 8) {
-                Slider(value: secondsBinding,
-                       in: SessionNotificationSettings.islandRange,
-                       step: 1)
+                SettingsSlider(value: secondsBinding,
+                               range: SessionNotificationSettings.islandRange,
+                               step: 1)
                     .frame(width: 140)
                 Text("\(Int(model.settings.sessionNotifications.islandSeconds.rounded())) \(Loc.t("秒", "s"))")
                     .monospacedDigit()

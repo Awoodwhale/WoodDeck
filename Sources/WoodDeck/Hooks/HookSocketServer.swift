@@ -177,6 +177,7 @@ enum HookPayload {
                               session: json["session"].text,
                               cwd: json["cwd"].text,
                               title: json["title"].text,
+                              name: json["name"].text,
                               message: json["message"].text,
                               tool: json["tool"].text,
                               pid: json["pid"].int,

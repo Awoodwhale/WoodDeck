@@ -53,6 +53,8 @@ final class DeckModel: ObservableObject {
     @Published private(set) var compactAlert: (text: String, color: Color)?
     // 会话提醒显示期间不接受额度提醒覆盖
     private var sessionAlertActive = false
+    // 当前会话提示属于哪个会话：这个会话被处理后提示随之收回
+    private var alertSessionID: String?
 
     private let locations = DataLocations.detect()
     private let http = HTTPClient()
@@ -448,24 +450,39 @@ final class DeckModel: ObservableObject {
     // 会话需要处理或结束时在收起形态上提示，可选自动展开到对应页面
     func flashSession(_ session: AgentSession) {
         guard settings.sessionNotifications.islandPopup else { return }
-        let text: String
+        let state: String
         switch session.status {
-        case .done: text = Loc.t("\(session.agent.shortName) · 会话已完成", "\(session.agent.shortName) · finished")
-        case .waitingPermission: text = Loc.t("\(session.agent.shortName) · 等待授权", "\(session.agent.shortName) · needs permission")
-        case .waitingInput: text = Loc.t("\(session.agent.shortName) · 等待你的输入", "\(session.agent.shortName) · waiting for you")
-        case .error: text = Loc.t("\(session.agent.shortName) · 出错", "\(session.agent.shortName) · error")
+        case .done: state = Loc.t("会话已完成", "finished")
+        case .waitingPermission: state = Loc.t("等待授权", "needs permission")
+        case .waitingInput: state = Loc.t("等待你的输入", "waiting for you")
+        case .error: state = Loc.t("出错", "error")
         default: return
         }
+        // 带上会话名称，同一项目里同时开着几个会话时也分得清是哪一个
+        let text = "\(session.agent.shortName) · \(session.displayName) · \(state)"
         alertTask?.cancel()
         sessionAlertActive = true
+        alertSessionID = session.id
         compactAlert = (text, session.status.color)
         let seconds = settings.sessionNotifications.islandSeconds
         alertTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(1, seconds) * 1_000_000_000))
             guard !Task.isCancelled else { return }
-            self?.sessionAlertActive = false
-            self?.compactAlert = nil
+            self?.endSessionAlert()
         }
+    }
+
+    // 会话已经在助手里处理完：提示属于这个会话时立刻收回
+    func clearSessionAlert(for sessionID: String) {
+        guard sessionAlertActive, alertSessionID == sessionID else { return }
+        alertTask?.cancel()
+        endSessionAlert()
+    }
+
+    private func endSessionAlert() {
+        sessionAlertActive = false
+        alertSessionID = nil
+        compactAlert = nil
     }
 
     private func checkAlerts() {

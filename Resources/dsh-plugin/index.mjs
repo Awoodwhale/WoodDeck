@@ -12,6 +12,9 @@ const DEDUPE_WINDOW_MS = 200
 const MESSAGE_MAX_CHARS = 200
 const RECENT_LIMIT = 512
 const PENDING_CALL_LIMIT = 256
+const TITLE_LIMIT = 256
+// 恢复出来的旧会话在插件加载前就有了标题事件，第一次见到时往回找这么多条
+const TITLE_SCAN_LIMIT = 4000
 
 // 只取文本块，多个文本块之间用空格连接
 function textOfContent(content) {
@@ -44,6 +47,7 @@ export function buildEvent(fields = {}) {
     session: clipField(fields.session),
     cwd: clipField(fields.cwd),
     title: clipField(fields.title),
+    name: clipField(fields.name),
     message: clipMessage(fields.message),
     tool: clipField(fields.tool),
     timestamp: Number.isFinite(fields.timestamp) ? fields.timestamp : Date.now(),
@@ -121,11 +125,50 @@ export function apply(ctx, config) {
       return toolName
     }
 
+    /** 会话 id -> 最近的会话标题（空字符串表示查过但没有） */
+    const titles = new Map()
+
+    const rememberTitle = (sessionId, title) => {
+      if (sessionId === '') return
+      if (titles.size >= TITLE_LIMIT && !titles.has(sessionId)) titles.clear()
+      titles.set(sessionId, typeof title === 'string' ? title.trim() : '')
+    }
+
+    // 第一次见到某个会话时，从日志末尾往回找最近的 session/title
+    const titleOf = (session, sessionId) => {
+      if (sessionId === '') return ''
+      const known = titles.get(sessionId)
+      if (known !== undefined) return known
+      let found = ''
+      try {
+        const end = typeof session?.seq === 'number' ? session.seq : 0
+        const stop = Math.max(0, end - TITLE_SCAN_LIMIT)
+        for (let seq = end - 1; seq >= stop; seq--) {
+          const past = session.eventAt(seq)
+          if (past?.type === 'session/title' && typeof past.data?.title === 'string') {
+            found = past.data.title
+            break
+          }
+        }
+      } catch {
+        // 读不到历史时当作没有标题
+      }
+      rememberTitle(sessionId, found)
+      return titles.get(sessionId) ?? ''
+    }
+
     const route = (session, event) => {
       if (event === null || typeof event !== 'object') return
       const sessionId = typeof session?.id === 'string' ? session.id : ''
       const cwd = typeof session?.header?.cwd === 'string' ? session.header.cwd : ''
       const data = event.data
+
+      if (event.type === 'session/title') {
+        rememberTitle(sessionId, data?.title)
+        emit({ event: 'title', session: sessionId, cwd, name: titles.get(sessionId), identity: titles.get(sessionId) })
+        return
+      }
+      const name = titleOf(session, sessionId)
 
       switch (event.type) {
         case 'user/message':
@@ -135,19 +178,21 @@ export function apply(ctx, config) {
             event: 'prompt',
             session: sessionId,
             cwd,
+            name,
             message: textOfContent(data?.content),
             identity: textOfContent(data?.content),
           })
           return
         case 'tool/call':
           rememberCall(sessionId, data?.callId, data?.name)
-          emit({ event: 'tool_start', session: sessionId, cwd, tool: data?.name, identity: data?.callId })
+          emit({ event: 'tool_start', session: sessionId, cwd, name, tool: data?.name, identity: data?.callId })
           return
         case 'tool/result':
           emit({
             event: 'tool_end',
             session: sessionId,
             cwd,
+            name,
             tool: takeCall(sessionId, data?.message?.toolCallId),
             identity: data?.message?.toolCallId,
           })
@@ -157,13 +202,25 @@ export function apply(ctx, config) {
             event: 'permission_request',
             session: sessionId,
             cwd,
+            name,
             tool: data?.toolName,
             message: data?.reason,
             identity: data?.id,
           })
           return
+        case 'approval/decided':
+          // 用户在 DSH 里批准或拒绝之后，岛上的审批提示随之收起
+          emit({
+            event: 'permission_resolved',
+            session: sessionId,
+            cwd,
+            name,
+            message: data?.outcome,
+            identity: data?.id,
+          })
+          return
         case 'turn/end':
-          emit({ event: 'stop', session: sessionId, cwd, message: data?.reason?.kind })
+          emit({ event: 'stop', session: sessionId, cwd, name, message: data?.reason?.kind })
           return
         default:
           return
@@ -175,6 +232,7 @@ export function apply(ctx, config) {
       for (const key of pendingCalls.keys()) {
         if (key.startsWith(prefix)) pendingCalls.delete(key)
       }
+      titles.delete(sessionId)
     }
 
     ctx.on('session/created', (session) => {

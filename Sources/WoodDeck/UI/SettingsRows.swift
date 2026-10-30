@@ -6,12 +6,14 @@ struct SettingRow<Content: View>: View {
     let title: String
     let description: String?
     @ViewBuilder let content: () -> Content
+    @Environment(\.settingsTint) private var tint
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.title2)
-                .foregroundColor(.secondary)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tint)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).fontWeight(.medium)
@@ -104,9 +106,32 @@ struct SettingsSliderLine: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 68, alignment: .trailing)
             }
-            Slider(value: item.value, in: item.range, step: item.step)
+            SettingsSlider(value: item.value, range: item.range, step: item.step)
                 .frame(width: 120)
             SettingsNumberField(value: item.value, range: item.range, step: item.step, suffix: item.suffix)
         }
+    }
+}
+
+// 设置页的滑块。macOS 的 Slider 带 step 时会在滑轨下面画一排刻度，
+// 这里不把 step 交给 Slider，改为在写回数值时按 step 取整
+struct SettingsSlider: View {
+    var value: Binding<Double>
+    var range: ClosedRange<Double>
+    var step: Double = 1
+
+    var body: some View {
+        Slider(value: snapped, in: range)
+    }
+
+    private var snapped: Binding<Double> {
+        Binding(get: { value.wrappedValue },
+                set: { raw in snappedForTest(raw) })
+    }
+
+    // 按步长取整后写回；自检直接调用它确认取整结果
+    func snappedForTest(_ raw: Double) {
+        let steps = ((raw - range.lowerBound) / step).rounded()
+        value.wrappedValue = min(range.upperBound, max(range.lowerBound, range.lowerBound + steps * step))
     }
 }

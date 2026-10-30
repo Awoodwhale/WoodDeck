@@ -711,6 +711,10 @@ struct SessionNotificationSettings: Codable {
     // 弹出提示时顺带展开面板
     var autoExpand: Bool = false
     var showInCompact: Bool = true
+    // 按状态分别决定是否提醒（岛上提示、横幅与声音）；关掉的状态只在会话页里显示
+    var alertPermission: Bool = true
+    var alertInput: Bool = true
+    var alertError: Bool = true
 
     init() {}
 
@@ -731,6 +735,19 @@ struct SessionNotificationSettings: Codable {
         islandSeconds = value(.islandSeconds, SessionNotificationSettings.islandDefault)
         autoExpand = value(.autoExpand, false)
         showInCompact = value(.showInCompact, true)
+        alertPermission = value(.alertPermission, true)
+        alertInput = value(.alertInput, true)
+        alertError = value(.alertError, true)
+    }
+
+    // 这个状态是否需要打扰用户
+    func alerts(for status: SessionStatus) -> Bool {
+        switch status {
+        case .waitingPermission: alertPermission
+        case .waitingInput: alertInput
+        case .error: alertError
+        case .working, .done, .idle: false
+        }
     }
 
     func enabled(for agent: AgentKind) -> Bool {

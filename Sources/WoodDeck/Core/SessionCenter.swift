@@ -19,8 +19,12 @@ final class SessionCenter: ObservableObject {
     private var watcher: SessionLogWatcher?
     private var pruneTimer: Timer?
     private var lastNotificationAt: [String: Date] = [:]
+    // 每个会话已经发出的系统横幅，处理完之后从通知中心撤回
+    private var bannerIdentifiers: [String: [String]] = [:]
     // 会话进入需要关注状态时的回调：岛上弹提示、可选自动展开
     var onAttention: ((AgentSession) -> Void)?
+    // 会话离开需要关注的状态（例如用户已经在助手里批准）时的回调：收回提示
+    var onAttentionCleared: ((AgentSession) -> Void)?
 
     private init() {}
 
@@ -32,9 +36,13 @@ final class SessionCenter: ObservableObject {
         server.start()
         self.server = server
 
-        // DeepSeek Harness 没有命令式 hook，改为观察它的会话记录
+        // DeepSeek Harness 插件没装时的兜底：观察它的会话记录。
+        // 插件已经实时上报时不再采用，记录要隔几秒才扫到，旧事件会把已经处理的审批重新标成等待
         let watcher = SessionLogWatcher { event in
-            Task { @MainActor in SessionCenter.shared.ingest(event) }
+            Task { @MainActor in
+                guard SessionCenter.shared.installedAgents[.dsh] != true else { return }
+                SessionCenter.shared.ingest(event)
+            }
         }
         watcher.start()
         self.watcher = watcher
@@ -96,7 +104,15 @@ final class SessionCenter: ObservableObject {
         if !event.cwd.isEmpty { session.cwd = event.cwd }
         if !event.tool.isEmpty { session.tool = event.tool }
         if !event.title.isEmpty { session.title = event.title }
-        if !event.message.isEmpty { session.message = event.message }
+        if !event.message.isEmpty, event.event != "title" { session.message = event.message }
+        // 助手给出的会话标题优先；没有标题时用第一句提问区分同一项目里的多个会话
+        let name = Self.clipName(event.name)
+        if !name.isEmpty {
+            session.name = name
+            session.nameIsTitle = true
+        } else if event.event == "prompt", !session.nameIsTitle, session.name.isEmpty {
+            session.name = Self.clipName(event.message)
+        }
         session.updatedAt = event.date
         session.eventCount += 1
 
@@ -119,12 +135,16 @@ final class SessionCenter: ObservableObject {
             session.status = .error
         case "permission_request":
             session.status = .waitingPermission
+        case "permission_resolved":
+            // 用户已经在助手里批准或拒绝，助手接着往下执行
+            session.status = .working
         case "permission_denied":
             session.status = .working
             if session.message.isEmpty { session.message = Loc.t("权限被拒绝", "Permission denied") }
         case "notification":
-            // 通知类事件（例如等待输入、达到限额）说明助手在等人
-            session.status = .waitingInput
+            // 通知类事件（例如等待输入、达到限额）说明助手在等人；
+            // 等待授权时 Claude Code 还会再发一条「需要授权」的通知，状态保持等待授权
+            if previous != .waitingPermission { session.status = .waitingInput }
         case "stop":
             session.status = .waitingInput
         case "session_end":
@@ -139,24 +159,46 @@ final class SessionCenter: ObservableObject {
             sessions.append(session)
         }
 
-        // 从工作状态转为需要关注时才提醒，避免重复打扰
-        if session.status.needsAttention, !previous.needsAttention {
+        // 离开原来需要关注的状态：用户已经在助手里处理过了，收回这条会话的提示
+        if previous.needsAttention, session.status != previous {
+            clearAttention(session)
+        }
+        // 进入新的需要关注的状态才提醒，同一状态的重复事件不再打扰
+        if session.status.needsAttention, session.status != previous {
             notify(session)
         }
-        lastAttention = session.status.needsAttention ? session : lastAttention
+        lastAttention = session.status.needsAttention ? session : (lastAttention?.id == session.id ? nil : lastAttention)
+    }
+
+    private static func clipName(_ text: String) -> String {
+        let collapsed = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return collapsed.count > 40 ? String(collapsed.prefix(40)) + "…" : collapsed
     }
 
     func dismiss(_ session: AgentSession) {
         sessions.removeAll { $0.id == session.id }
+        clearAttention(session)
     }
 
     func clearFinished() {
         sessions.removeAll { $0.status == .done || $0.status == .idle }
     }
 
+    // 收回某个会话的提示：岛上提示、提醒保持的展开以及已经发出的系统横幅
+    private func clearAttention(_ session: AgentSession) {
+        onAttentionCleared?(session)
+        guard let identifiers = bannerIdentifiers.removeValue(forKey: session.id), !identifiers.isEmpty else { return }
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        let center = UNUserNotificationCenter.current()
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
+
     private func notify(_ session: AgentSession) {
-        lastAttention = session
         let settings = SettingsStore.shared.settings
+        // 用户关掉了这个状态的提醒：会话页照常显示，岛上与系统通知保持安静
+        guard settings.sessionNotifications.alerts(for: session.status) else { return }
+        lastAttention = session
         // 岛上提示与系统横幅各自独立开关
         if settings.sessionNotifications.islandPopup {
             onAttention?(session)
@@ -171,11 +213,12 @@ final class SessionCenter: ObservableObject {
         guard Bundle.main.bundleIdentifier != nil else { return }
         let content = UNMutableNotificationContent()
         content.title = "\(session.agent.displayName) · \(session.status.label)"
-        let body = session.message.isEmpty ? session.projectName : "\(session.projectName)：\(session.message)"
-        content.body = String(body.prefix(180))
+        content.subtitle = session.fullName
+        content.body = String((session.message.isEmpty ? session.status.label : session.message).prefix(180))
         content.sound = settings.sessionNotifications.sound ? .default : nil
-        let request = UNNotificationRequest(identifier: session.id + "-" + UUID().uuidString,
-                                            content: content, trigger: nil)
+        let identifier = session.id + "-" + UUID().uuidString
+        bannerIdentifiers[session.id, default: []].append(identifier)
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
 

@@ -13,6 +13,8 @@ final class SessionLogWatcher {
         // 上次末尾没有换行的半行，等下一次补上
         var tail: Data
         var headerCwd: String
+        // 最近一次 session/title 事件里的会话标题
+        var title: String
         var events: [WatchedEvent]
     }
 
@@ -79,11 +81,13 @@ final class SessionLogWatcher {
             if lastSeen[key] == signature { continue }
             lastSeen[key] = signature
 
+            // 目录名就是会话 id（session-<uuid>），与插件上报的一致
             let event = AgentEvent(agent: .dsh,
                                    event: mapKind(last.kind),
                                    session: file.deletingLastPathComponent().lastPathComponent,
                                    cwd: last.cwd.isEmpty ? projectName(of: file, root: root) : last.cwd,
                                    title: "",
+                                   name: record.title,
                                    message: last.text,
                                    tool: last.tool,
                                    pid: nil,
@@ -99,9 +103,9 @@ final class SessionLogWatcher {
     // 文件没变就沿用上次的事件；变长只读新增部分；变短就整个重来
     private func update(file: URL, key: String, size: Int, modified: Date, previous: Cache?) -> Cache? {
         if let previous, previous.size == size, previous.modified == modified { return previous }
-        var record = previous ?? Cache(size: 0, modified: .distantPast, offset: 0, tail: Data(), headerCwd: "", events: [])
+        var record = previous ?? Cache(size: 0, modified: .distantPast, offset: 0, tail: Data(), headerCwd: "", title: "", events: [])
         if size < record.offset {
-            record = Cache(size: 0, modified: .distantPast, offset: 0, tail: Data(), headerCwd: "", events: [])
+            record = Cache(size: 0, modified: .distantPast, offset: 0, tail: Data(), headerCwd: "", title: "", events: [])
         }
         guard let chunk = readAppended(file, from: record.offset) else {
             return record.offset == 0 ? nil : record
@@ -131,6 +135,7 @@ final class SessionLogWatcher {
                 }
             }
             guard let event = event(from: line, headerCwd: record.headerCwd) else { continue }
+            if event.kind == "session/title", !event.text.isEmpty { record.title = event.text }
             record.events.append(event)
         }
         if record.events.count > keepEvents {
@@ -157,7 +162,9 @@ final class SessionLogWatcher {
         case "tool/result": return "tool_end"
         case "assistant/message", "step/end": return "tool_end"
         case "turn/end", "job/settled": return "stop"
-        case "permission/request": return "permission_request"
+        case "approval/asked": return "permission_request"
+        case "approval/decided": return "permission_resolved"
+        case "session/title": return "title"
         case "session/end": return "session_end"
         default: return "activity"
         }
@@ -185,6 +192,13 @@ final class SessionLogWatcher {
             if text.isEmpty { text = content.text }
         } else if kind == "user/message" {
             text = json["data"]["message"]["content"].text
+        } else if kind == "session/title" {
+            text = json["data"]["title"].text
+        } else if kind == "approval/asked" {
+            tool = json["data"]["toolName"].text
+            text = json["data"]["reason"].text
+        } else if kind == "approval/decided" {
+            text = json["data"]["outcome"].text
         }
         var cwd = json["cwd"].text.isEmpty ? json["data"]["cwd"].text : json["cwd"].text
         if cwd.isEmpty { cwd = headerCwd }

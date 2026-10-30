@@ -52,18 +52,25 @@ enum HookEmitter {
             case "PreCompact", "PostCompact": event = "compact"
             default: event = explicitEvent.isEmpty ? name.lowercased() : explicitEvent
             }
+            // 提问事件的正文是用户这一句话，用来在没有标题时给会话起名
+            let text = event == "prompt" ? firstText(payload, ["prompt", "message"]) : message
+            // 工具事件很密集，只在会弹提醒或换轮次的事件上读会话标题
+            let title = titleEvents.contains(event) ? claudeTitle(transcript: payload["transcript_path"].text) : ""
             return AgentEvent(agent: .claude, event: event, session: session, cwd: cwd,
                               title: payload["tool_input"]["description"].text,
-                              message: message, tool: tool, pid: nil, timestamp: payload["timestamp"].float)
+                              name: title,
+                              message: text, tool: tool, pid: nil, timestamp: payload["timestamp"].float)
 
         case .codex:
-            // Codex 的 notify 程序收到 {"type":"agent-turn-complete", ...}
+            // Codex 的 notify 程序收到 {"type":"agent-turn-complete", ...}；
+            // thread-id 是整段对话，turn-id 每轮都会变，按对话合并会话
             let type = payload["type"].text
-            let session = payload["turn-id"].text.isEmpty ? payload["thread-id"].text : payload["turn-id"].text
+            let session = payload["thread-id"].text.isEmpty ? payload["turn-id"].text : payload["thread-id"].text
             let message = firstText(payload, ["last-assistant-message", "message"])
             let event = type == "agent-turn-complete" ? "stop" : (explicitEvent.isEmpty ? type : explicitEvent)
+            let firstInput = payload["input-messages"].array?.first?.text ?? ""
             return AgentEvent(agent: .codex, event: event, session: session, cwd: payload["cwd"].text,
-                              title: "", message: message, tool: "", pid: nil, timestamp: nil)
+                              title: "", name: firstInput, message: message, tool: "", pid: nil, timestamp: nil)
 
         case .gemini:
             let name = payload["hook_event_name"].text
@@ -82,7 +89,8 @@ enum HookEmitter {
             default: event = explicitEvent.isEmpty ? name.lowercased() : explicitEvent
             }
             return AgentEvent(agent: .gemini, event: event, session: session, cwd: cwd,
-                              title: "", message: firstText(payload, ["message", "prompt_response", "error"]),
+                              title: "",
+                              message: firstText(payload, event == "prompt" ? ["prompt", "message"] : ["message", "prompt_response", "error"]),
                               tool: tool, pid: nil, timestamp: nil)
 
         case .opencode, .dsh:
@@ -91,9 +99,41 @@ enum HookEmitter {
             return AgentEvent(agent: agent, event: event, session: session,
                               cwd: payload["cwd"].text.isEmpty ? payload["directory"].text : payload["cwd"].text,
                               title: payload["title"].text,
+                              name: payload["name"].text,
                               message: firstText(payload, ["message", "text", "summary"]),
                               tool: payload["tool"].text, pid: nil, timestamp: payload["timestamp"].float)
         }
+    }
+
+    private static let titleEvents: Set<String> = ["session_start", "prompt", "permission_request", "notification", "stop", "error", "tool_failed"]
+    // 会话记录可能有几十兆，只读末尾这一段：Claude Code 每轮都会把标题重新写一遍
+    private static let transcriptTailBytes = 512 * 1024
+
+    // Claude Code 的会话记录里，用户改过的标题记作 custom-title，自动生成的记作 ai-title
+    static func claudeTitle(transcript path: String) -> String {
+        guard !path.isEmpty, let handle = FileHandle(forReadingAtPath: path) else { return "" }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return "" }
+        let start = size > UInt64(transcriptTailBytes) ? size - UInt64(transcriptTailBytes) : 0
+        guard (try? handle.seek(toOffset: start)) != nil, let data = try? handle.readToEnd() else { return "" }
+        var custom = ""
+        var generated = ""
+        for line in data.split(separator: 0x0A) {
+            // 先按字节筛一遍，绝大多数行是消息，不必逐行解析
+            guard line.range(of: Data("-title\"".utf8)) != nil else { continue }
+            guard let json = try? JSONValue.parse(Data(line)) else { continue }
+            switch json["type"].text {
+            case "custom-title":
+                let text = json["customTitle"].text
+                if !text.isEmpty { custom = text }
+            case "ai-title":
+                let text = json["aiTitle"].text
+                if !text.isEmpty { generated = text }
+            default:
+                break
+            }
+        }
+        return custom.isEmpty ? generated : custom
     }
 
     private static func firstText(_ payload: JSONValue, _ keys: [String]) -> String {

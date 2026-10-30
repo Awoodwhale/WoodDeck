@@ -92,17 +92,19 @@ macOS 15.4 起，第三方应用读取系统媒体信息需要 mediaremote 适�
 
 | 助手 | 接入方式 | 说明 |
 | --- | --- | --- |
-| Claude Code | `~/.claude/settings.json` 的 hooks | 注册 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PermissionRequest`、`Notification`、`Stop` 等事件，命令为 `WoodDeck --hook claude` |
-| Codex | `~/.codex/config.toml` 的 `notify` | 命令为 `WoodDeck --hook codex`，接收 `agent-turn-complete` 事件 |
+| Claude Code | `~/.claude/settings.json` 的 hooks | 注册 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PermissionRequest`、`Notification`、`Stop` 等事件，命令为 `WoodDeck --hook claude`；会话名称取会话记录里的标题（改过名的优先） |
+| Codex | `~/.codex/config.toml` 的 `notify` | 命令为 `WoodDeck --hook codex`，接收 `agent-turn-complete` 事件，按 `thread-id` 合并为一个会话，名称取第一句输入 |
 | Gemini CLI | `~/.gemini/settings.json` 的 hooks | 注册 `SessionStart`、`BeforeAgent`、`AfterAgent`、`BeforeTool`、`AfterTool`、`Notification` |
-| opencode | `~/.config/opencode/plugin/wooddeck.ts` 插件 | 插件把会话、消息、工具与权限事件转给 `WoodDeck --hook opencode` |
-| DeepSeek Harness | 本地 Cordis 插件 `dsh-wooddeck-hook` | 打开开关即启用：自动检测本机的 `dsh`，找不到时可以手动填写路径；随后把插件挂到 profile 的 `cordis.patch.yml`，订阅 `session/created`、`user/message`、`tool/call`、`tool/result`、`approval/asked`、`turn/end`、`session/disposed`，把事件交给 `WoodDeck --hook dsh` |
+| opencode | `~/.config/opencode/plugin/wooddeck.ts` 插件 | 插件把会话、消息、工具、权限请求与答复、会话标题和出错事件转给 `WoodDeck --hook opencode` |
+| DeepSeek Harness | 本地 Cordis 插件 `dsh-wooddeck-hook` | 打开开关即启用：自动检测本机的 `dsh`，找不到时可以手动填写路径；随后把插件挂到 profile 的 `cordis.patch.yml`，订阅 `session/created`、`session/title`、`user/message`、`tool/call`、`tool/result`、`approval/asked`、`approval/decided`、`turn/end`、`session/disposed`，把事件交给 `WoodDeck --hook dsh` |
+
+会话页和岛上提示用会话名称区分同一项目里的多个会话：有助手给出的标题就用标题，没有时用第一句提问。提醒按状态分开开关（等待授权、等待输入、出错），关掉的状态只在会话页里显示。你在助手里批准、拒绝或继续对话之后，这个会话的岛上提示、提醒展开和已经发出的系统横幅会一起收回。Claude Code 的 hooks 没有「审批已答复」事件，它的审批提示要等工具执行结束（`PostToolUse`）或被拒绝（`PermissionDenied`）才收回。
 
 事件通过本机 Unix 套接字（`~/Library/Application Support/WoodDeck/hooks/sessions.sock`，权限 600）传给应用，不占用端口，也不经过网络。写入失败会被忽略，助手的命令不会因为 WoodDeck 没运行而报错。
 
 ![会话通知设置](docs/settings-sessions.png)
 
-每行末尾带「配置」按钮，打开该助手的独立面板：配置文件在哪、当前是否在读，DeepSeek Harness 还能在那里挑 `dsh` 路径和要读取的 profile（`~/.dsh/profiles` 下带 `cordis.patch.yml` 的那些，默认全选，`web` 是桌面端、`headless` 是命令行），改动 profile 会立刻按新范围写入或清理。「在岛上弹出提示」的停留时长可以调，范围 2 到 60 秒，默认 8 秒；打开「弹出提示时自动展开」后，提示期间面板保持展开，指针移到岛上或提示结束才收起。
+每行末尾带「配置」按钮，打开该助手的独立面板：配置文件在哪、当前是否在读，DeepSeek Harness 还能在那里挑 `dsh` 路径和要读取的 profile（`~/.dsh/profiles` 下带 `cordis.patch.yml` 的那些，默认全选，`web` 是桌面端、`headless` 是命令行），改动 profile 会立刻按新范围写入或清理。「在岛上弹出提示」的停留时长可以调，范围 2 到 60 秒，默认 8 秒；打开「弹出提示时自动展开」后，提示期间面板保持展开，指针移到岛上或提示结束才收起。提醒展开只做提示：面板不取得键盘焦点，点击会穿过面板交给下面的应用，正在打字或点按都不会被打断；指针移到岛上之后面板才接收点击，点一下面板后 Esc 可以收起。
 
 ![DeepSeek Harness 的配置面板](docs/agent-dsh.png)
 
@@ -120,7 +122,7 @@ macOS 15.4 起，第三方应用读取系统媒体信息需要 mediaremote 适�
 
 ### 设置
 
-设置窗口按 macOS 常规的侧栏分栏排布，八页：通用、外观、时间、音乐、会话通知、额度来源、快捷键、关于。
+设置窗口按 macOS 常规的侧栏分栏排布，八页：通用、外观、时间、音乐、会话通知、额度来源、快捷键、关于。界面参考 [Thaw](https://github.com/thaw-app/Thaw) 的设置窗口：侧栏用系统的半透明材质，可以用工具栏左侧的按钮收起；每页有自己的颜色，侧栏里是彩色的图标块，页面里每一行的图标也用这一页的颜色；页面标题和一句说明放在工具栏里，内容滚动到工具栏下面时逐渐淡出。
 
 ![通用设置](docs/settings-general.png)
 
@@ -176,6 +178,11 @@ WoodDeck.app/Contents/MacOS/WoodDeck --dsh-hook status           # install / uni
 ```sh
 .build/release/WoodDeck --selftest        # 逐个来源读取本机数据并打印真实结果
 .build/release/WoodDeck --sessiontest     # 完整跑一次会话事件链路并打印状态变化
+.build/release/WoodDeck --attentiontest   # 会话提醒全链路：提醒展开不取得焦点、审批处理后自动收回、按状态的提醒开关、会话名称
+.build/release/WoodDeck --settingstest shown   # 设置窗口：工具栏标题与说明、侧栏收起再展开（窗口透明，不打扰使用）
+.build/release/WoodDeck --settingstest colors  # 设置页颜色：每页图标块颜色各不相同，行首图标跟随本页颜色
+.build/release/WoodDeck --settingstest sliders # 设置页滑块：滑轨下方没有刻度，数值仍按步长取整
+.build/release/WoodDeck --settingstest focus   # 设置窗口焦点：打开时不进入输入框，点击别处结束编辑并提交数值
 .build/release/WoodDeck --monitortest     # 打印一次系统监控采样
 .build/release/WoodDeck --lyricfadetest   # 核对歌词换句的淡入淡出
 .build/release/WoodDeck --animtest        # 测展开收起的动画节拍、布局耗时与静止时的重排次数
@@ -207,7 +214,7 @@ WoodDeck.app/Contents/MacOS/WoodDeck --dsh-hook status           # install / uni
 - 登录令牌只在内存里使用，手动填写的密钥保存在系统钥匙串。
 - 只有读取配额与用量、同步模型单价、获取歌词与封面时会联网，不上传会话内容，不收集使用数据。
 - 自定义脚本在独立的 JavaScript 沙盒里运行，无法访问文件与进程；每次读取最长 10 秒、最多 16 个请求，请求与响应各不超过 1 MB。
-- 会话通知只传事件名称、项目路径与工具名，不读取对话内容；套接字只监听本机。
+- 会话通知在本机传递事件名称、会话标题（没有标题时取第一句提问的前 40 个字）、项目路径、工具名与助手给出的简短说明；Claude Code 的标题从会话记录末尾的标题行读取，其余对话内容不读取；套接字只监听本机。
 
 ## 灵感来源与致谢
 
