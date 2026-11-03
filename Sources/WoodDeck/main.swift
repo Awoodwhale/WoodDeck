@@ -9,7 +9,7 @@ let diagnosticFlags = ["--watchtest", "--sessiontest", "--conversationtest", "--
                        "--marqueetest", "--marqueevisible", "--musicrender", "--monitorrender", "--pagetest",
                        "--shots", "--themetest", "--marqueepixeltest", "--usagecost", "--notifytest",
                        "--hookfeedback", "--sheetfeedback", "--lyricstest", "--drift", "--animtest",
-                       "--attentiontest"]
+                       "--attentiontest", "--alertfade", "--artworktest", "--musicmodetest"]
 if ProcessInfo.processInfo.environment["WOODDECK_HOOK_SOCKET"] == nil,
    CommandLine.arguments.contains(where: { diagnosticFlags.contains($0) }) {
     let temp = FileManager.default.temporaryDirectory
@@ -169,6 +169,33 @@ if CommandLine.arguments.contains("--expandholdtest") {
 // 会话提醒全链路：不抢焦点、处理后收回、按状态开关、会话名称
 if CommandLine.arguments.contains("--attentiontest") {
     MainActor.assumeIsolated { AttentionTest.run() }
+    exit(0)
+}
+
+// 会话提醒出现与收回是否渐变
+if CommandLine.arguments.contains("--alertfade") {
+    MainActor.assumeIsolated { AlertFadeTest.run() }
+    exit(0)
+}
+
+// 播放器不支持播放模式时，音乐页左下角是否还画播放模式
+if CommandLine.arguments.contains("--musicmodetest") {
+    MainActor.assumeIsolated { MusicModeTest.run() }
+    exit(0)
+}
+
+// 换歌时封面是否跟着换
+if CommandLine.arguments.contains("--artworktest") {
+    let arguments = CommandLine.arguments
+    let done = DispatchSemaphore(value: 0)
+    Task { @MainActor in
+        await ArtworkTest.run(arguments: arguments)
+        done.signal()
+    }
+    // 观察模式要跑满指定秒数，其他模式几秒内结束
+    while done.wait(timeout: .now() + 0.1) == .timedOut {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    }
     exit(0)
 }
 

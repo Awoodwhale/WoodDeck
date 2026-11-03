@@ -66,7 +66,7 @@ macOS 没有公开的 GPU 占用接口，监控页的这一项显示为不可用
 
 macOS 15.4 起，第三方应用读取系统媒体信息需要 mediaremote 适配器。WoodDeck 随应用打包 [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter)，通过系统自带的 `/usr/bin/perl` 加载 `MediaRemoteAdapter.framework` 读取「正在播放」并发送控制命令。凡是接入系统媒体控制的播放器都能显示与控制，包括 Apple Music、Spotify、QQ 音乐、网易云音乐与浏览器里的网页播放器。
 
-播放模式与「喜欢」按钮只在播放器报告自己支持时才出现。网易云音乐在 macOS 上不向系统报告这两项能力，因此它的面板里不显示这两个按钮。
+播放模式与「喜欢」按钮只在播放器报告自己支持时才出现。网易云音乐在 macOS 上不向系统报告这两项能力，因此它的面板里不出现这两个按钮，播放控制行左侧留空、播放键仍然居中。
 
 ### 支持的工具
 
@@ -179,6 +179,10 @@ WoodDeck.app/Contents/MacOS/WoodDeck --dsh-hook status           # install / uni
 .build/release/WoodDeck --selftest        # 逐个来源读取本机数据并打印真实结果
 .build/release/WoodDeck --sessiontest     # 完整跑一次会话事件链路并打印状态变化
 .build/release/WoodDeck --attentiontest   # 会话提醒全链路：提醒展开不取得焦点、审批处理后自动收回、按状态的提醒开关、会话名称
+.build/release/WoodDeck --alertfade       # 会话提醒出现与收回：逐帧量提醒文字的不透明度，三条路径都应当渐变；同时核对收起形态的封面、歌词、律动条排版
+.build/release/WoodDeck --musicmodetest   # 播放器不报告播放模式时，音乐页左下角不该出现播放模式，播放键仍在整行正中
+.build/release/WoodDeck --artworktest     # 封面：换歌时清掉上一首的图、新封面覆盖旧封面、缓存不会挡住后续更新、一次性查询能取到封面
+.build/release/WoodDeck --artworktest watch 600   # 跟着真实播放观察 10 分钟，换歌时打印封面字节数的变化
 .build/release/WoodDeck --settingstest shown   # 设置窗口：工具栏标题与说明、侧栏收起再展开（窗口透明，不打扰使用）
 .build/release/WoodDeck --settingstest colors  # 设置页颜色：每页图标块颜色各不相同，行首图标跟随本页颜色
 .build/release/WoodDeck --settingstest sliders # 设置页滑块：滑轨下方没有刻度，数值仍按步长取整

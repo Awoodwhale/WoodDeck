@@ -170,37 +170,53 @@ struct CompactIslandView: View {
 
     @ViewBuilder
     private var musicSegmentContent: some View {
-        if let alert = content.alertText {
-            Text(alert)
-                .font(.system(size: 11 * splitMusicScale, weight: .medium))
-                .foregroundStyle(content.alertColor)
-                .lineLimit(1)
-        } else if content.musicText.isEmpty {
-            Image(systemName: "music.note")
-                .font(.system(size: 11))
-                .foregroundStyle(Color.white.opacity(0.22))
-        } else {
-            if let artwork = content.artwork, let image = NSImage(data: artwork) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 20 * splitMusicScale, height: 20 * splitMusicScale)
-                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        // 会话提醒与歌词叠在同一位置各自淡入淡出，提醒进来时不会整块跳过
+        ZStack(alignment: .leading) {
+            musicSegmentTrack
+                .opacity(content.alertText == nil ? 1 : 0)
+            if let alert = content.alertText {
+                Text(alert)
+                    .font(.system(size: 11 * splitMusicScale, weight: .medium))
+                    .foregroundStyle(content.alertColor)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.opacity)
             }
-            // 放不下时先停留再匀速滚动；短句换长句时靠淡入淡出过渡，位置不跳
-            LyricLineText(text: content.musicText,
-                          font: .system(size: 11 * splitMusicScale, weight: .semibold),
-                          color: palette.lyricColor.opacity(0.92),
-                          paused: content.animating,
-                          alignment: .leading,
-                          nsFont: .systemFont(ofSize: 11 * splitMusicScale, weight: .semibold))
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if content.equalizer {
-                EqualizerLayer(color: NSColor(content.coverTint ?? Color.white.opacity(0.75)),
-                               barWidth: 2.2, height: 12,
-                               playing: content.playing, paused: content.animating)
-                    .frame(width: 4 * 2.2 + 3 * 2.2, height: 12)
-                    .allowsHitTesting(false)
+        }
+        .animation(.easeInOut(duration: IslandTiming.crossFade), value: content.alertText)
+    }
+
+    @ViewBuilder
+    private var musicSegmentTrack: some View {
+        // 这一段要作为一个整体放进叠图层，所以封面、歌词、律动条之间自己排成一行
+        HStack(spacing: 6) {
+            if content.musicText.isEmpty {
+                Image(systemName: "music.note")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.white.opacity(0.22))
+            } else {
+                if let artwork = content.artwork, let image = NSImage(data: artwork) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 20 * splitMusicScale, height: 20 * splitMusicScale)
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                }
+                // 放不下时先停留再匀速滚动；短句换长句时靠淡入淡出过渡，位置不跳
+                LyricLineText(text: content.musicText,
+                              font: .system(size: 11 * splitMusicScale, weight: .semibold),
+                              color: palette.lyricColor.opacity(0.92),
+                              paused: content.animating,
+                              alignment: .leading,
+                              nsFont: .systemFont(ofSize: 11 * splitMusicScale, weight: .semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if content.equalizer {
+                    EqualizerLayer(color: NSColor(content.coverTint ?? Color.white.opacity(0.75)),
+                                   barWidth: 2.2, height: 12,
+                                   playing: content.playing, paused: content.animating)
+                        .frame(width: 4 * 2.2 + 3 * 2.2, height: 12)
+                        .allowsHitTesting(false)
+                }
             }
         }
     }
@@ -230,55 +246,66 @@ struct CompactIslandView: View {
 
     @ViewBuilder
     private func row(size: CGSize) -> some View {
-        HStack(spacing: 8 * scale) {
+        // 会话提醒与收起条原有内容交叉淡入淡出：两层叠在一起各自过渡，不会一帧内整块跳变
+        ZStack(alignment: .leading) {
+            rowTrack
+                .opacity(content.alertText == nil ? 1 : 0)
             if let alert = content.alertText {
                 Text(alert)
                     .font(.system(size: 11.5 * scale, weight: .medium))
                     .foregroundStyle(content.alertColor)
                     .lineLimit(1)
                     .truncationMode(.tail)
-            } else {
-                if let artwork = content.artwork, let image = NSImage(data: artwork) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: 20 * scale, height: 20 * scale)
-                        .clipShape(RoundedRectangle(cornerRadius: 4 * scale, style: .continuous))
-                } else if content.sessionBadge > 0, let agent = content.sessionAgent {
-                    SessionBadge(count: content.sessionBadge, agent: agent, scale: scale)
-                } else if !content.rings.isEmpty {
-                    ringCluster
-                }
-                if !content.musicText.isEmpty {
-                    LyricLineText(text: content.musicText,
-                                  font: .system(size: 11.5 * scale, weight: .medium),
-                                  color: palette.lyricColor.opacity(0.86),
-                                  paused: content.animating,
-                                  nsFont: .systemFont(ofSize: 11.5 * scale, weight: .medium))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else if content.rings.isEmpty {
-                    Spacer(minLength: 0)
-                } else {
-                    Spacer(minLength: 0)
-                }
-                if content.equalizer {
-                    let barWidth = 2.2 * scale
-                    EqualizerLayer(color: NSColor(content.coverTint ?? Color.white.opacity(0.75)),
-                                   barWidth: barWidth, height: 12 * scale,
-                                   playing: content.playing, paused: content.animating)
-                        .frame(width: 4 * barWidth + 3 * barWidth, height: 12 * scale)
-                        .allowsHitTesting(false)
-                }
-                if !content.clock.isEmpty {
-                    clockView
-                }
-                if content.monitorCpu != nil || content.monitorMemory != nil || content.monitorNetwork != nil {
-                    monitorChip
-                }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .transition(.opacity)
             }
         }
+        .animation(.easeInOut(duration: IslandTiming.crossFade), value: content.alertText)
         .frame(width: size.width - 2 * inset(for: content.style) * scale, alignment: .center)
         .clipped()
+    }
+
+    @ViewBuilder
+    private var rowTrack: some View {
+        HStack(spacing: 8 * scale) {
+            if let artwork = content.artwork, let image = NSImage(data: artwork) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 20 * scale, height: 20 * scale)
+                    .clipShape(RoundedRectangle(cornerRadius: 4 * scale, style: .continuous))
+            } else if content.sessionBadge > 0, let agent = content.sessionAgent {
+                SessionBadge(count: content.sessionBadge, agent: agent, scale: scale)
+            } else if !content.rings.isEmpty {
+                ringCluster
+            }
+            if !content.musicText.isEmpty {
+                LyricLineText(text: content.musicText,
+                              font: .system(size: 11.5 * scale, weight: .medium),
+                              color: palette.lyricColor.opacity(0.86),
+                              paused: content.animating,
+                              nsFont: .systemFont(ofSize: 11.5 * scale, weight: .medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if content.rings.isEmpty {
+                Spacer(minLength: 0)
+            } else {
+                Spacer(minLength: 0)
+            }
+            if content.equalizer {
+                let barWidth = 2.2 * scale
+                EqualizerLayer(color: NSColor(content.coverTint ?? Color.white.opacity(0.75)),
+                               barWidth: barWidth, height: 12 * scale,
+                               playing: content.playing, paused: content.animating)
+                    .frame(width: 4 * barWidth + 3 * barWidth, height: 12 * scale)
+                    .allowsHitTesting(false)
+            }
+            if !content.clock.isEmpty {
+                clockView
+            }
+            if content.monitorCpu != nil || content.monitorMemory != nil || content.monitorNetwork != nil {
+                monitorChip
+            }
+        }
     }
 
     // 收起形态的系统读数：CPU / 内存百分比与网络速率，读不到的项不显示

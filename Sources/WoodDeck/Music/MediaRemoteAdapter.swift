@@ -39,7 +39,6 @@ actor MediaRemoteAdapter {
     private var last: NowPlaying?
     private var emitted = false
     private var artworkCache: [String: Data] = [:]
-    private var missingArtwork: Set<String> = []
     private var artworkOrder: [String] = []
 
     init(resources: URL) {
@@ -97,6 +96,19 @@ actor MediaRemoteAdapter {
 
     func send(_ command: MediaCommand) async throws {
         _ = try await run(["send", String(command.rawValue)])
+    }
+
+    // 主动问一次当前的播放信息：换歌那一条流事件可能不带封面，需要单独补齐。
+    // get 输出的是平铺的播放信息，stream 输出的是包在 payload 里的事件，两种都接受
+    func current() async throws -> NowPlaying? {
+        let text = try await run(["get", "--now", "--micros"])
+        for line in text.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8), let root = try? JSONValue.parse(data) else { continue }
+            let payload = root["payload"].object == nil ? root : root["payload"]
+            return nowPlaying(payload)
+        }
+        return nil
     }
 
     func seek(to seconds: Double) async throws {
@@ -268,24 +280,29 @@ actor MediaRemoteAdapter {
             liked: payload["isLiked"].bool ?? false)
     }
 
-    // 同一曲目每次更新都会重复整份封面，按曲目标识缓存解码结果
+    // 同一曲目每次更新都会重复整份封面，按曲目标识缓存解码结果。
+    // 报文里带了封面就以报文为准并刷新缓存：播放器补发新封面时，缓存不能一直挡住后续的更新
     private func artwork(from payload: JSONValue, key: String) -> Data? {
-        if let cached = artworkCache[key] { return cached }
-        if missingArtwork.contains(key) { return nil }
         let encoded = payload["artworkData"].string ?? ""
-        guard !encoded.isEmpty else { return nil }
+        guard !encoded.isEmpty else { return artworkCache[key] }
         guard let data = Data(base64Encoded: encoded, options: .ignoreUnknownCharacters), !data.isEmpty else {
-            missingArtwork.insert(key)
-            return nil
+            return artworkCache[key]
         }
+        if let cached = artworkCache[key], cached == data { return cached }
         artworkCache[key] = data
+        artworkOrder.removeAll { $0 == key }
         artworkOrder.append(key)
         while artworkOrder.count > 8 {
             let old = artworkOrder.removeFirst()
             artworkCache.removeValue(forKey: old)
-            missingArtwork.remove(old)
         }
         return data
+    }
+
+    // 自检用：按给定报文解析一次封面，验证缓存不会挡住后续的封面更新
+    func artworkForTest(payloadJSON: String, key: String) -> Data? {
+        guard let data = payloadJSON.data(using: .utf8), let root = try? JSONValue.parse(data) else { return nil }
+        return artwork(from: root, key: key)
     }
 
     // 控制命令用一次性进程执行，等待真实退出码

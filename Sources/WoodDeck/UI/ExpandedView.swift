@@ -27,6 +27,7 @@ struct ExpandedPanelView: View {
         VStack(spacing: 0) {
             header
             if !alertText.isEmpty {
+                // 提醒条与下面的页面一起渐变出现、渐变收回，不会一帧内挤进来
                 HStack(spacing: 6) {
                     Image(systemName: "bell.badge.fill")
                         .font(.system(size: 9))
@@ -38,6 +39,7 @@ struct ExpandedPanelView: View {
                 .foregroundStyle(alertColor)
                 .padding(.horizontal, 14)
                 .padding(.bottom, 5)
+                .transition(.opacity)
             }
             Divider().overlay(Color.white.opacity(0.08))
             Group {
@@ -63,6 +65,7 @@ struct ExpandedPanelView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .animation(.easeInOut(duration: IslandTiming.crossFade), value: alertText)
         .background(Theme.palette.panelColor)
         .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
     }

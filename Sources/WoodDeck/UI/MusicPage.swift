@@ -246,11 +246,17 @@ struct MusicPageView: View {
         }
     }
 
-    // 控制行：播放模式在最左，播放键在整行居中，上一首与下一首分列两侧
+    // 控制行：播放模式在最左，播放键在整行居中，上一首与下一首分列两侧。
+    // 播放器不上报播放模式时左侧不放东西，只用等宽占位保住播放键居中
     private var controlRow: some View {
         HStack(spacing: 0) {
-            modeButton
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if music.canChangeMode {
+                modeButton
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Color.clear.frame(width: 22, height: 1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             HStack(spacing: 18) {
                 control("backward.fill", size: 13, enabled: music.canPrevious) { onCommand(.previous) }
                 control(music.playing ? "pause.fill" : "play.fill", size: 17, enabled: music.canToggle) {
@@ -264,7 +270,7 @@ struct MusicPageView: View {
         }
     }
 
-    // 播放模式：列表循环 / 单曲循环 / 随机 / 顺序，按播放器报告的能力循环
+    // 播放模式：列表循环 / 单曲循环 / 随机 / 顺序，按播放器报告的能力循环；没有这个能力时整块不出现
     private var modeButton: some View {
         Button(action: onMode) {
             HStack(spacing: 4) {
@@ -273,14 +279,11 @@ struct MusicPageView: View {
                 Text(modeLabel)
                     .font(.system(size: 10))
             }
-            .foregroundStyle(music.canChangeMode ? Color.white.opacity(0.7) : Color.white.opacity(0.25))
+            .foregroundStyle(Color.white.opacity(0.7))
             .frame(height: 16)
         }
         .buttonStyle(.plain)
-        .disabled(!music.canChangeMode)
-        .help(music.canChangeMode
-              ? Loc.t("切换播放模式（\(modeLabel)）", "Change playback mode (\(modeLabel))")
-              : Loc.t("这个播放器不提供播放模式控制", "This player does not expose playback mode"))
+        .help(Loc.t("切换播放模式（\(modeLabel)）", "Change playback mode (\(modeLabel))"))
     }
 
     private var modeIcon: String {

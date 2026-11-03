@@ -67,6 +67,9 @@ final class DeckModel: ObservableObject {
     private var musicAdapter: MediaRemoteAdapter?
     private var musicTask: Task<Void, Never>?
     private var lyricsKey = ""
+    // 当前封面属于哪首曲目：换歌时封面必须跟着换，不能沿用上一首
+    private var artworkKey = ""
+    private var artworkTask: Task<Void, Never>?
     private var alertTask: Task<Void, Never>?
     private var previousLevels: [UUID: Int] = [:]
     private var settingsToken: UUID?
@@ -562,6 +565,8 @@ final class DeckModel: ObservableObject {
         guard let update, !update.title.isEmpty else {
             music = MusicDisplay(available: true)
             lyricsKey = ""
+            artworkKey = ""
+            artworkTask?.cancel()
             return
         }
         let wasPlaying = music.playing
@@ -570,7 +575,7 @@ final class DeckModel: ObservableObject {
         music.title = update.title
         music.artist = update.artist
         music.album = update.album
-        music.artwork = update.artwork ?? music.artwork
+        applyArtwork(update)
         music.duration = update.duration
         music.position = update.position()
         music.positionStamp = Date()
@@ -614,6 +619,39 @@ final class DeckModel: ObservableObject {
             }
         } else {
             updateLyricPosition()
+        }
+    }
+
+    // 封面跟着曲目走：换歌那一条事件常常不带封面，这时先清掉上一首的封面，再单独问一次适配器
+    private func applyArtwork(_ update: NowPlaying) {
+        let key = update.uniqueIdentifier.isEmpty
+            ? "\(update.title)|\(update.artist)|\(update.album)"
+            : update.uniqueIdentifier
+        if key != artworkKey {
+            artworkKey = key
+            // 换歌那一条事件可能不带封面，也可能还带着上一首的封面：
+            // 先按报文显示，然后再单独问一次适配器，把封面纠正成这一首的
+            music.artwork = update.artwork
+            artworkTask?.cancel()
+            refreshArtwork(for: key, delay: update.artwork == nil ? 0 : 0.5)
+            return
+        }
+        if let artwork = update.artwork {
+            music.artwork = artwork
+            artworkTask?.cancel()
+        }
+    }
+
+    // 单独问一次当前封面：换歌时流事件里的封面可能还是上一首的，稍等播放器把新封面交出来再取
+    private func refreshArtwork(for key: String, delay: TimeInterval) {
+        guard let adapter = musicAdapter else { return }
+        artworkTask = Task { @MainActor [weak self] in
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            guard let fresh = try? await adapter.current(), let artwork = fresh.artwork else { return }
+            guard let self, self.artworkKey == key, self.music.artwork != artwork else { return }
+            self.music.artwork = artwork
         }
     }
 
