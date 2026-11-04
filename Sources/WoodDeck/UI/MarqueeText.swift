@@ -127,17 +127,14 @@ struct LyricLineText: View {
     // 与 SwiftUI 字体对应的 NSFont 字号与字重
     var nsFont: NSFont = .systemFont(ofSize: 11, weight: .semibold)
 
+    // 换句的过渡在 MarqueeLayerView 内部完成：旧句留一份替身原地淡出、新句同时淡入，
+    // 这里只负责把最新的文字交下去，视图本身不重建，于是滚动位置与文字层的身份都不会跳变
     var body: some View {
-        ZStack(alignment: alignment) {
-            MarqueeLayer(text: text,
-                         font: nsFont,
-                         color: NSColor(color),
-                         speed: speed,
-                         paused: paused)
-                .id(text)
-                .transition(.opacity)
-                .allowsHitTesting(false)
-        }
-        .animation(.easeInOut(duration: Self.fadeDuration), value: text)
+        MarqueeLayer(text: text,
+                     font: nsFont,
+                     color: NSColor(color),
+                     speed: speed,
+                     paused: paused)
+            .allowsHitTesting(false)
     }
 }

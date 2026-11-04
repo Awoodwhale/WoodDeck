@@ -8,6 +8,10 @@ import SwiftUI
 final class MarqueeLayerView: NSView {
     private let first = CATextLayer()
     private let second = CATextLayer()
+    private let fadeDuration: TimeInterval = 0.22
+
+    // 自检用：新建过几次视图。文字层被重建时这个数会露出来
+    nonisolated(unsafe) static var makeCount = 0
 
     private var textAttributes = NSAttributedString()
     private var textWidth: CGFloat = 0
@@ -43,13 +47,17 @@ final class MarqueeLayerView: NSView {
         let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
         let attributed = NSAttributedString(string: text, attributes: attributes)
         let width = ceil(attributed.size().width)
+        let textChanged = textAttributes.string != text
         let changed = width != textWidth
-            || textAttributes.string != text
+            || textChanged
             || self.spacing != spacing
             || self.speed != speed
             || self.initialDelay != initialDelay
         // 换主题时只有颜色与字重会变，这时就地重画并保持当前滚动位置
         let restyled = !sameColor(textColor, color) || textFont != font
+        // 换句时旧句由替身原地淡出、新句同时淡入：两层的不透明度互补，
+        // 画面上始终有等量的字，既不空白也不整体变暗
+        let crossfade = textChanged && !textAttributes.string.isEmpty && !isPaused
         textAttributes = attributed
         textWidth = width
         textColor = color
@@ -60,8 +68,12 @@ final class MarqueeLayerView: NSView {
         let wasPaused = isPaused
         isPaused = paused
         if changed {
-            needsRestart = true
-            applyText()
+            if crossfade {
+                crossfadeToText()
+            } else {
+                needsRestart = true
+                applyText(fadeIn: textChanged && !text.isEmpty && !isPaused)
+            }
         } else if restyled {
             applyText()
         }
@@ -86,20 +98,114 @@ final class MarqueeLayerView: NSView {
             && abs(left.alphaComponent - right.alphaComponent) < 0.001
     }
 
-    private func applyText() {
+    private func applyText(fadeIn: Bool = false) {
         let scale = window?.backingScaleFactor ?? 2
         for textLayer in [first, second] {
             textLayer.contentsScale = scale
             textLayer.rasterizationScale = scale
             textLayer.string = textAttributes
         }
+        pendingFadeIn = fadeIn
         needsLayout = true
+        // 当场摆好两层文字：换字之前视图尺寸可能还没变，等下一轮布局的话，
+        // 新文字会按旧宽度排在外面，看起来就是这一段没有歌词
+        reflow()
+    }
+
+    private var pendingFadeIn = false
+
+    // 自检用：换过几次字
+    nonisolated(unsafe) static var crossfadeCount = 0
+
+    // 旧句的替身：按此刻呈现出的样子复制一层，原地淡出，新句同时淡入
+    private var ghosts: [CATextLayer] = []
+
+    private func crossfadeToText() {
+        Self.crossfadeCount += 1
+        swapGeneration += 1
+        for source in [first, second] where !source.isHidden {
+            let live = source.presentation() ?? source
+            let ghost = CATextLayer()
+            ghost.string = live.string
+            ghost.font = live.font
+            ghost.fontSize = live.fontSize
+            ghost.anchorPoint = live.anchorPoint
+            ghost.bounds = live.bounds
+            ghost.position = live.position
+            ghost.alignmentMode = live.alignmentMode
+            ghost.truncationMode = live.truncationMode
+            ghost.isWrapped = live.isWrapped
+            ghost.contentsScale = live.contentsScale
+            ghost.rasterizationScale = live.rasterizationScale
+            ghost.opacity = 0
+            ghost.setAffineTransform(live.affineTransform())
+            layer?.addSublayer(ghost)
+            ghosts.append(ghost)
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 1
+            fade.toValue = 0
+            fade.duration = fadeDuration
+            fade.fillMode = .backwards
+            fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            ghost.add(fade, forKey: "ghostFadeOut")
+            // 淡完就摘掉，不等换字的节拍：下一次换字可能来得更早
+            DispatchQueue.main.asyncAfter(deadline: .now() + fadeDuration) { [weak self, weak ghost] in
+                guard let ghost else { return }
+                ghost.removeFromSuperlayer()
+                self?.ghosts.removeAll { $0 === ghost }
+            }
+        }
+        // 替身太多说明换字过密，先清掉最早的几个，避免图层越堆越多
+        while ghosts.count > 6, let oldest = ghosts.first {
+            oldest.removeFromSuperlayer()
+            ghosts.removeFirst()
+        }
+        needsRestart = true
+        applyText(fadeIn: true)
+    }
+
+    private var swapGeneration = 0
+
+    private func fadeInText() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for textLayer in [first, second] {
+            textLayer.opacity = 1
+        }
+        CATransaction.commit()
+        for textLayer in [first, second] {
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0
+            fade.toValue = 1
+            fade.duration = fadeDuration
+            fade.fillMode = .backwards
+            fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            textLayer.add(fade, forKey: "textFadeIn")
+        }
     }
 
     private var lastLayoutWidth: CGFloat = -1
 
+    // 自检用：两层文字此刻真正呈现出的不透明度
+    func presentedAlphas() -> (first: Double, second: Double) {
+        let firstAlpha = Double((first.presentation() ?? first).opacity)
+        let secondAlpha = Double((second.presentation() ?? second).opacity)
+        return (firstAlpha, secondAlpha)
+    }
+
+    // 自检用：仍在淡出的旧句替身此刻呈现出的不透明度
+    func presentedGhostAlphas() -> [Double] {
+        ghosts.map { Double(($0.presentation() ?? $0).opacity) }
+    }
+
     override func layout() {
         super.layout()
+        reflow()
+    }
+
+    // 按当前尺寸重新摆好两层文字。只动自己的图层，不去触碰视图树：
+    // 在 SwiftUI 更新过程中再触发一次子树布局会撞上 AppKit 的递归检查
+    private func reflow() {
         let height = bounds.height
         let scale = window?.backingScaleFactor ?? 2
         // 可用宽度变了说明是展开/收起或旋转导致的重新布局，重启走马灯，
@@ -110,11 +216,15 @@ final class MarqueeLayerView: NSView {
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        // 空文字时没有字形可取，attributes(at: 0) 会抛越界异常，这里回退到当前字号
+        let fontSize = textAttributes.length > 0
+            ? (textAttributes.attributes(at: 0, effectiveRange: nil)[.font] as? NSFont)?.pointSize ?? textFont.pointSize
+            : textFont.pointSize
         for textLayer in [first, second] {
             textLayer.contentsScale = scale
             textLayer.rasterizationScale = scale
             textLayer.bounds = CGRect(x: 0, y: 0, width: textWidth, height: height)
-            textLayer.fontSize = (textAttributes.attributes(at: 0, effectiveRange: nil)[.font] as? NSFont)?.pointSize ?? 11
+            textLayer.fontSize = fontSize
         }
         // 垂直居中：CATextLayer 的 bounds 以左下为原点，这里按翻转坐标系摆位
         let textHeight = textAttributes.size().height
@@ -129,6 +239,11 @@ final class MarqueeLayerView: NSView {
         if needsRestart {
             needsRestart = false
             startAnimations()
+        }
+        // 淡入放在走马灯重启之后：重启会清掉这两层上的动画，之前挂上去的淡入会被一并抹掉
+        if pendingFadeIn {
+            pendingFadeIn = false
+            fadeInText()
         }
     }
 
@@ -213,6 +328,7 @@ struct MarqueeLayer: NSViewRepresentable {
 
     func makeNSView(context: Context) -> MarqueeLayerView {
         let view = MarqueeLayerView()
+        MarqueeLayerView.makeCount += 1
         view.configure(text: text, font: font, color: color, spacing: spacing, speed: speed,
                        initialDelay: initialDelay, paused: paused)
         return view

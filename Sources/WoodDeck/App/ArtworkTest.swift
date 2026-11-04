@@ -14,7 +14,7 @@ enum ArtworkTest {
         await adapterCheck()
     }
 
-    // 换歌那一条事件没有封面时，不能沿用上一首的封面
+    // 换歌那一条事件没有封面时先留住当前封面，等适配器问到的封面来替换
     private static func logic() async {
         print("—— 封面跟着曲目走")
         guard let first = imageData("docs/icon.png"), let second = imageData("docs/monitor.png") else {
@@ -34,7 +34,7 @@ enum ArtworkTest {
         trackB.artwork = nil
         model.applyNowPlayingForTest(trackB)
         print("  换成第二首且这条事件没有封面：\(model.music.artwork?.count ?? 0) 字节")
-        print("  上一首的封面已清掉：\(model.music.artwork == nil ? "是 ✓" : "否 ✗")")
+        print("  这条事件没有封面时先留住上一张：\(model.music.artwork == first ? "是 ✓" : "否 ✗")")
 
         trackA.uniqueIdentifier = "self-test-a"
         model.applyNowPlayingForTest(trackA)
@@ -66,18 +66,28 @@ enum ArtworkTest {
         "{\"artworkData\":\"\(image.base64EncodedString())\"}"
     }
 
-    // 单独问一次适配器，确认能拿到当前曲目的封面
+    // 单独问适配器，确认能拿到当前曲目的封面。
+    // 换歌之后的一小段时间里系统还没把封面交出来，查询会得到空答复，
+    // 应用为此会补问几次，这里也按同样的节奏补问
     private static func adapterCheck() async {
         print("—— 适配器单独查一次封面")
         let adapter = MediaRemoteAdapter(resources: MediaRemoteResources.directory)
-        guard let fresh = try? await adapter.current() else {
-            print("  查询失败 ✗")
-            return
+        var attempts: [Int] = []
+        for round in 1...4 {
+            guard let fresh = try? await adapter.current() else {
+                print("  查询失败 ✗")
+                return
+            }
+            let bytes = fresh.artwork?.count ?? 0
+            attempts.append(bytes)
+            print("  第 \(round) 次查询：\(fresh.title) · \(fresh.artist)，封面 \(bytes) 字节")
+            if bytes > 0 {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 800_000_000)
         }
-        let bytes = fresh.artwork?.count ?? 0
-        print("  当前曲目：\(fresh.title) · \(fresh.artist)")
-        print("  一次性查询取到的封面：\(bytes) 字节")
-        print("  能取到封面：\(bytes > 0 ? "是 ✓" : "否 ✗")")
+        let got = attempts.contains { $0 > 0 }
+        print("  能取到封面：\(got ? "是 ✓" : "否 ✗")（各次 \(attempts.map(String.init).joined(separator: " / ")) 字节）")
     }
 
     // 跟着真实的播放走，换歌时打印封面字节数的变化
@@ -88,15 +98,16 @@ enum ArtworkTest {
         let deadline = Date().addingTimeInterval(seconds)
         report("—— 观察换歌时的封面（\(Int(seconds)) 秒）")
         while Date() < deadline {
-            let line = "\(model.music.title)|\(model.music.artwork?.count ?? 0)"
+            let line = "\(model.music.title)|\(model.music.artwork?.count ?? 0)|\(model.music.artworkToken)"
             if line != last {
                 last = line
-                report(String(format: "%@  %@  封面 %d 字节",
+                report(String(format: "%@  %@  封面 %d 字节 标识 %@",
                               TimeFormatting.clock(Date(), hour24: true, style: .minimal),
                               model.music.title,
-                              model.music.artwork?.count ?? 0))
+                              model.music.artwork?.count ?? 0,
+                              model.music.artworkToken.isEmpty ? "（空）" : model.music.artworkToken))
             }
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            try? await Task.sleep(nanoseconds: 50_000_000)
         }
     }
 

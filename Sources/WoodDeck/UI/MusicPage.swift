@@ -81,15 +81,18 @@ struct MusicPageView: View {
         return HStack(alignment: .top, spacing: gap) {
             artwork(coverSize: coverSize)
             VStack(alignment: .leading, spacing: 3) {
-                Text(music.title.isEmpty ? Loc.t("未知曲目", "Unknown track") : music.title)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
+                // 曲名与歌手换歌时交叉淡入，避免整块文字一帧之内换掉
+                LyricCrossfadeText(text: music.title.isEmpty ? Loc.t("未知曲目", "Unknown track") : music.title,
+                                   font: .system(size: 15, weight: .semibold),
+                                   color: Theme.textPrimary,
+                                   rise: 0,
+                                   duration: IslandTiming.coverFade)
                 HStack(spacing: 4) {
-                    Text(music.artist.isEmpty ? music.album : music.artist)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(1)
+                    LyricCrossfadeText(text: music.artist.isEmpty ? music.album : music.artist,
+                                       font: .system(size: 11.5),
+                                       color: Theme.textSecondary,
+                                       rise: 0,
+                                       duration: IslandTiming.coverFade)
                     if !music.sourceName.isEmpty {
                         Text("·")
                             .font(.system(size: 11.5))
@@ -120,21 +123,7 @@ struct MusicPageView: View {
     }
 
     private func artwork(coverSize: CGFloat) -> some View {
-        Group {
-            if let data = music.artwork, let image = NSImage(data: data) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                ZStack {
-                    RoundedRectangle(cornerRadius: coverRadius(coverSize), style: .continuous)
-                        .fill(Color.white.opacity(0.08))
-                    Image(systemName: "music.note").font(.system(size: 22)).foregroundStyle(.white.opacity(0.3))
-                }
-            }
-        }
-        .frame(width: coverSize, height: coverSize)
-        .clipShape(RoundedRectangle(cornerRadius: coverRadius(coverSize), style: .continuous))
+        CoverView(data: music.artwork, token: music.artworkToken, size: coverSize, cornerRadius: coverRadius(coverSize), placeholderSize: 22)
     }
 
     // 圆角约为边长的 8%，与上游一致
@@ -148,37 +137,45 @@ struct MusicPageView: View {
         VStack(alignment: .leading, spacing: 1) {
             if maxLines <= 0 {
                 EmptyView()
-            } else if music.lyrics.isEmpty {
-                LyricCrossfadeText(text: music.album.isEmpty ? " " : music.album,
-                                   font: .system(size: 11.5),
-                                   color: Theme.lyric.opacity(0.32),
-                                   rise: 0)
             } else {
-                lyricRows(maxLines: maxLines)
+                // 歌词行始终在场：有无歌词之间整块换成另一套视图的话，换歌时会跳变一次。
+                // 歌名放在上面一层淡入淡出，等歌词到了再让出去。
+                // 歌词行要自己排成一列：直接放进叠放容器的话，几行会叠在同一行上
+                ZStack(alignment: .leading) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        lyricRows(maxLines: maxLines)
+                    }
+                    if music.lyrics.isEmpty {
+                        LyricCrossfadeText(text: music.album.isEmpty ? " " : music.album,
+                                           font: .system(size: 11.5),
+                                           color: Theme.lyric.opacity(0.32),
+                                           rise: 0)
+                            .transition(.opacity)
+                    }
+                }
             }
         }
-        // 当前句换行时整块做淡入淡出，避免歌词硬切
-        .animation(.easeInOut(duration: 0.26), value: lyricKey)
-    }
-
-    // 参与过渡判断的歌词内容：任一行的文字变化都触发淡入淡出
-    private var lyricKey: String {
-        [music.currentLyric, music.currentTranslation, music.nextLyric, music.previousLyric]
-            .joined(separator: "\u{1F}")
+        // 有无歌词之间让歌名淡出：这一段是从空白变成有字，没有旧字可叠
+        .animation(.easeInOut(duration: IslandTiming.crossFade), value: music.lyrics.isEmpty)
     }
 
     // 按顺序填充歌词行：当前 → 翻译 → 下一句 → 上一句，最多 maxLines 行
     @ViewBuilder
     private func lyricRows(maxLines: Int) -> some View {
-        LyricCrossfadeText(text: music.currentLyric.isEmpty ? " " : music.currentLyric,
+        // 行间空档时当前句为空，这时继续显示上一句，不把这一行留白
+        LyricCrossfadeText(text: music.currentLyric.isEmpty
+                                ? (music.heldLyric.isEmpty ? " " : music.heldLyric)
+                                : music.currentLyric,
                            font: .system(size: 12.5, weight: .medium),
                            color: Theme.lyric.opacity(0.95),
-                           rise: 4)
+                           rise: 4,
+                           duration: 0.24)
         if maxLines >= 2, showTranslation, !music.currentTranslation.isEmpty {
             LyricCrossfadeText(text: music.currentTranslation,
                                font: .system(size: 11),
                                color: Theme.lyric.opacity(0.55),
-                               rise: 2)
+                               rise: 2,
+                               duration: 0.24)
             if maxLines >= 3, !music.nextLyric.isEmpty {
                 nextLine
             }
@@ -194,14 +191,16 @@ struct MusicPageView: View {
         LyricCrossfadeText(text: music.nextLyric,
                            font: .system(size: 11.5),
                            color: Theme.lyric.opacity(0.42),
-                           rise: 2)
+                           rise: 2,
+                           duration: 0.24)
     }
 
     private var previousLine: some View {
         LyricCrossfadeText(text: music.previousLyric,
                            font: .system(size: 11),
                            color: Theme.lyric.opacity(0.26),
-                           rise: 2)
+                           rise: 2,
+                           duration: 0.24)
     }
 
     // 进度条：两端下方分别是已播与总时长

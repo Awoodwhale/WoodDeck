@@ -70,6 +70,10 @@ final class DeckModel: ObservableObject {
     // 当前封面属于哪首曲目：换歌时封面必须跟着换，不能沿用上一首
     private var artworkKey = ""
     private var artworkTask: Task<Void, Never>?
+    // 收到「没有在播」的报文后延迟清空，避免切歌那一下把岛上的文字清成空白
+    private var clearTask: Task<Void, Never>?
+    // 封面的版本号：每次换图递增，界面据此判断要不要做交叉淡入
+    private var artworkVersion = 0
     private var alertTask: Task<Void, Never>?
     private var previousLevels: [UUID: Int] = [:]
     private var settingsToken: UUID?
@@ -362,7 +366,15 @@ final class DeckModel: ObservableObject {
             switch settings.musicText {
             case .none: musicText = ""
             case .title: musicText = music.hasTrack ? music.caption : ""
-            case .lyrics: musicText = music.currentLyric.isEmpty ? (music.hasTrack ? music.caption : "") : music.currentLyric
+            case .lyrics:
+                if !music.currentLyric.isEmpty {
+                    musicText = music.currentLyric
+                } else if !music.lyrics.isEmpty && !music.heldLyric.isEmpty {
+                    // 同一首歌行间的空档：继续显示上一句，不退回曲名
+                    musicText = music.heldLyric
+                } else {
+                    musicText = music.hasTrack ? music.caption : ""
+                }
             }
         }
 
@@ -372,7 +384,7 @@ final class DeckModel: ObservableObject {
         let geometry = CompactGeometry.compact(settings, style: style, metrics: metrics)
         // 封面取色开关打开时，用封面主色给律动条与进度着色
         let coverTint: Color? = settings.musicCoverColor
-            ? music.artwork.flatMap { CoverColor.tint(from: $0) }
+            ? music.artwork.flatMap { CoverColor.tint(from: $0, token: music.artworkToken) }
             : nil
         let attention = SessionCenter.shared.attentionSessions
         let showBadge = settings.sessionNotifications.showInCompact && !attention.isEmpty
@@ -384,6 +396,7 @@ final class DeckModel: ObservableObject {
             equalizer: settings.showsMusicContent(style) && music.hasTrack,
             playing: music.playing,
             artwork: settings.showsMusicContent(style) ? music.artwork : nil,
+            artworkToken: settings.showsMusicContent(style) ? music.artworkToken : "",
             coverTint: coverTint,
             alertText: compactAlert?.text,
             alertColor: compactAlert?.color ?? .white,
@@ -561,14 +574,19 @@ final class DeckModel: ObservableObject {
         updateLyricPosition()
     }
 
+    // 自检模式下只清空歌词、不发起联网查询，用来稳定复现换歌瞬间的画面
+    nonisolated(unsafe) static var suppressLyricsFetch = false
+
     private func applyNowPlaying(_ update: NowPlaying?) {
         guard let update, !update.title.isEmpty else {
-            music = MusicDisplay(available: true)
-            lyricsKey = ""
-            artworkKey = ""
-            artworkTask?.cancel()
+            // 切歌时系统会先给一条没有曲名的空报文。立刻按「没有在播」清空的话，
+            // 岛上的文字会先变成空白，看起来就是闪一下；这里留一小段时间，
+            // 期间来了新的曲目就把这次清空取消
+            scheduleNowPlayingClear()
             return
         }
+        clearTask?.cancel()
+        clearTask = nil
         let wasPlaying = music.playing
         music.available = true
         music.playing = update.playing
@@ -603,6 +621,7 @@ final class DeckModel: ObservableObject {
             lyricsKey = key
             // 先清空上一首的歌词：新曲目的歌词要联网查，查询期间若保留旧词就会张冠李戴
             clearLyrics()
+            guard !Self.suppressLyricsFetch else { return }
             let title = update.title, artist = update.artist, album = update.album, duration = update.duration
             let preferred = LyricsService.preferredSource(for: update.bundleIdentifier)
             Task { [weak self] in
@@ -611,6 +630,7 @@ final class DeckModel: ObservableObject {
                     guard let self, self.lyricsKey == key else { return }
                     if lines.isEmpty {
                         self.clearLyrics()
+                        self.music.heldLyric = ""
                     } else {
                         self.music.lyrics = lines
                         self.updateLyricPosition()
@@ -622,36 +642,90 @@ final class DeckModel: ObservableObject {
         }
     }
 
-    // 封面跟着曲目走：换歌那一条事件常常不带封面，这时先清掉上一首的封面，再单独问一次适配器
+    // 收到空报文后等一小段时间再清空：切歌那一下系统会先给一条没有曲名的报文，
+    // 立刻清空会让岛上的文字先变空白再换上新歌，看起来就是闪一下
+    private func scheduleNowPlayingClear() {
+        guard clearTask == nil else { return }
+        clearTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.clearTask = nil
+            self.clearNowPlaying()
+        }
+    }
+
+    private func clearNowPlaying() {
+        music = MusicDisplay(available: true)
+        lyricsKey = ""
+        artworkKey = ""
+        artworkTask?.cancel()
+        artworkTask = nil
+    }
+
+    // 封面跟着曲目走：换歌那一条事件常常不带封面，这时先留着上一张，等单独问到的封面来替换
     private func applyArtwork(_ update: NowPlaying) {
         let key = update.uniqueIdentifier.isEmpty
             ? "\(update.title)|\(update.artist)|\(update.album)"
             : update.uniqueIdentifier
         if key != artworkKey {
             artworkKey = key
-            // 换歌那一条事件可能不带封面，也可能还带着上一首的封面：
-            // 先按报文显示，然后再单独问一次适配器，把封面纠正成这一首的
-            music.artwork = update.artwork
             artworkTask?.cancel()
-            refreshArtwork(for: key, delay: update.artwork == nil ? 0 : 0.5)
+            if let artwork = update.artwork {
+                // 换歌那一条事件可能不带封面，也可能还带着上一首的封面：
+                // 先按报文显示，然后再单独问一次适配器，把封面纠正成这一首的
+                setArtwork(artwork)
+                refreshArtwork(for: key, delay: 0.5)
+            } else {
+                // 这条事件没带封面：先留住当前这张，画面不会空一下；同时立刻去问，问不到再补问
+                refreshArtwork(for: key, delay: 0)
+            }
             return
         }
         if let artwork = update.artwork {
-            music.artwork = artwork
+            setArtwork(artwork)
             artworkTask?.cancel()
         }
     }
 
-    // 单独问一次当前封面：换歌时流事件里的封面可能还是上一首的，稍等播放器把新封面交出来再取
-    private func refreshArtwork(for key: String, delay: TimeInterval) {
+    // 封面与它的标识一起更新：图变了，界面才会换图并做交叉淡入。
+    // 系统会给同一首歌报出不同的曲目标识，图却还是同一张，这时不能换标识，
+    // 否则界面会把同一张图淡出再淡入，看起来就是闪一下
+    private func setArtwork(_ data: Data?) {
+        guard let data else {
+            music.artwork = nil
+            music.artworkToken = ""
+            return
+        }
+        guard data != music.artwork else { return }
+        music.artwork = data
+        artworkVersion += 1
+        music.artworkToken = "\(artworkKey)#\(artworkVersion)"
+    }
+
+    // 单独问一次当前封面：换歌时流事件里的封面可能还是上一首的，稍等播放器把新封面交出来再取；
+    // 问到空答复时接着补问，只有确认答复的就是这一首、复查仍然没有封面，才换成占位图
+    private func refreshArtwork(for key: String, delay: TimeInterval, attempts: Int = 3) {
         guard let adapter = musicAdapter else { return }
         artworkTask = Task { @MainActor [weak self] in
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
-            guard let fresh = try? await adapter.current(), let artwork = fresh.artwork else { return }
-            guard let self, self.artworkKey == key, self.music.artwork != artwork else { return }
-            self.music.artwork = artwork
+            let fresh = try? await adapter.current()
+            guard let self, self.artworkKey == key else { return }
+            if let artwork = fresh?.artwork {
+                self.setArtwork(artwork)
+                return
+            }
+            // 换歌那一刻系统还没把封面交出来：答复里没有封面不代表这一首没有封面。
+            // 答复的曲名对得上才算确认，确认之后仍要多问几次，因为播放器可能要过一会儿才给出图
+            let confirmed = fresh.map { $0.title == self.music.title } ?? false
+            if attempts > 1 {
+                self.refreshArtwork(for: key, delay: confirmed ? 0.8 : 0.4, attempts: attempts - 1)
+                return
+            }
+            if confirmed, self.music.artwork != nil {
+                self.setArtwork(nil)
+            }
         }
     }
 
@@ -662,6 +736,8 @@ final class DeckModel: ObservableObject {
         music.currentTranslation = ""
         music.nextLyric = ""
         music.previousLyric = ""
+        // 换歌时不再沿用上一首的句子：新曲目的标题先顶上，歌词到了再换
+        music.heldLyric = ""
     }
 
     private func updateLyricPosition() {
@@ -691,6 +767,8 @@ final class DeckModel: ObservableObject {
             }
         }
         if currentIndex > 0 { previous = music.lyrics[currentIndex - 1].text }
+        // 记住最近一句：行间的空档与新曲目歌词还没到的时候，界面继续显示它
+        if !current.isEmpty { music.heldLyric = current }
         // 只有显示出来的文字变了才发布一次
         if current != music.currentLyric || next != music.nextLyric || translated != music.currentTranslation
             || previous != music.previousLyric {

@@ -29,6 +29,8 @@ struct MusicDisplay {
     var artist: String = ""
     var album: String = ""
     var artwork: Data?
+    // 封面的标识：同一张封面不变，换图时变化。界面据此复用解码结果并做交叉淡入
+    var artworkToken: String = ""
     var duration: Double = 0
     var position: Double = 0
     // 位置对应的时刻，用于插值
@@ -44,6 +46,9 @@ struct MusicDisplay {
     var sourceName: String = ""
     var lyrics: [LyricLine] = []
     var currentLyric: String = ""
+    // 最近一句已经显示过的歌词：新曲目的歌词要联网查，查询期间先留着它，
+    // 免得同一处文字在「歌词 → 标题 → 新歌词」之间来回换两次
+    var heldLyric: String = ""
     var currentTranslation: String = ""
     var nextLyric: String = ""
     var previousLyric: String = ""
@@ -87,6 +92,8 @@ struct CompactContent {
     var equalizer: Bool
     var playing: Bool
     var artwork: Data?
+    // 与 MusicDisplay 的封面标识同源，用于交叉淡入
+    var artworkToken: String = ""
     // 从封面提取的主色，用于律动条与进度条着色；封面取色关闭时为空
     var coverTint: Color?
     var alertText: String?

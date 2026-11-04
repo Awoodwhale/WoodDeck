@@ -188,35 +188,37 @@ struct CompactIslandView: View {
 
     @ViewBuilder
     private var musicSegmentTrack: some View {
-        // 这一段要作为一个整体放进叠图层，所以封面、歌词、律动条之间自己排成一行
+        // 这一段要作为一个整体放进叠图层，所以封面、歌词、律动条之间自己排成一行。
+        // 文字层始终在场：它在有无歌词之间被移除再插入的话，换歌时会整块重建，
+        // 既看不到淡出淡入，也可能因为新视图还没排好版而短暂空着
         HStack(spacing: 6) {
-            if content.musicText.isEmpty {
-                Image(systemName: "music.note")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.white.opacity(0.22))
-            } else {
-                if let artwork = content.artwork, let image = NSImage(data: artwork) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
+            ZStack {
+                if content.musicText.isEmpty {
+                    Image(systemName: "music.note")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.white.opacity(0.22))
                         .frame(width: 20 * splitMusicScale, height: 20 * splitMusicScale)
-                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                } else {
+                    CoverView(data: content.artwork,
+                              token: content.artworkToken,
+                              size: 20 * splitMusicScale,
+                              cornerRadius: 4)
                 }
-                // 放不下时先停留再匀速滚动；短句换长句时靠淡入淡出过渡，位置不跳
-                LyricLineText(text: content.musicText,
-                              font: .system(size: 11 * splitMusicScale, weight: .semibold),
-                              color: palette.lyricColor.opacity(0.92),
-                              paused: content.animating,
-                              alignment: .leading,
-                              nsFont: .systemFont(ofSize: 11 * splitMusicScale, weight: .semibold))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if content.equalizer {
-                    EqualizerLayer(color: NSColor(content.coverTint ?? Color.white.opacity(0.75)),
-                                   barWidth: 2.2, height: 12,
-                                   playing: content.playing, paused: content.animating)
-                        .frame(width: 4 * 2.2 + 3 * 2.2, height: 12)
-                        .allowsHitTesting(false)
-                }
+            }
+            // 放不下时先停留再匀速滚动；短句换长句时靠淡入淡出过渡，位置不跳
+            LyricLineText(text: content.musicText,
+                          font: .system(size: 11 * splitMusicScale, weight: .semibold),
+                          color: palette.lyricColor.opacity(0.92),
+                          paused: content.animating,
+                          alignment: .leading,
+                          nsFont: .systemFont(ofSize: 11 * splitMusicScale, weight: .semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if content.equalizer {
+                EqualizerLayer(color: NSColor(content.coverTint ?? Color.white.opacity(0.75)),
+                               barWidth: 2.2, height: 12,
+                               playing: content.playing, paused: content.animating)
+                    .frame(width: 4 * 2.2 + 3 * 2.2, height: 12)
+                    .allowsHitTesting(false)
             }
         }
     }
@@ -268,29 +270,23 @@ struct CompactIslandView: View {
     @ViewBuilder
     private var rowTrack: some View {
         HStack(spacing: 8 * scale) {
-            if let artwork = content.artwork, let image = NSImage(data: artwork) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 20 * scale, height: 20 * scale)
-                    .clipShape(RoundedRectangle(cornerRadius: 4 * scale, style: .continuous))
+            if content.artwork != nil {
+                CoverView(data: content.artwork,
+                          token: content.artworkToken,
+                          size: 20 * scale,
+                          cornerRadius: 4 * scale)
             } else if content.sessionBadge > 0, let agent = content.sessionAgent {
                 SessionBadge(count: content.sessionBadge, agent: agent, scale: scale)
             } else if !content.rings.isEmpty {
                 ringCluster
             }
-            if !content.musicText.isEmpty {
-                LyricLineText(text: content.musicText,
-                              font: .system(size: 11.5 * scale, weight: .medium),
-                              color: palette.lyricColor.opacity(0.86),
-                              paused: content.animating,
-                              nsFont: .systemFont(ofSize: 11.5 * scale, weight: .medium))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else if content.rings.isEmpty {
-                Spacer(minLength: 0)
-            } else {
-                Spacer(minLength: 0)
-            }
+            // 文字层始终在场：有无歌词之间来回插入删除会让它在换歌时整块重建
+            LyricLineText(text: content.musicText,
+                          font: .system(size: 11.5 * scale, weight: .medium),
+                          color: palette.lyricColor.opacity(0.86),
+                          paused: content.animating,
+                          nsFont: .systemFont(ofSize: 11.5 * scale, weight: .medium))
+                .frame(maxWidth: .infinity, alignment: .leading)
             if content.equalizer {
                 let barWidth = 2.2 * scale
                 EqualizerLayer(color: NSColor(content.coverTint ?? Color.white.opacity(0.75)),

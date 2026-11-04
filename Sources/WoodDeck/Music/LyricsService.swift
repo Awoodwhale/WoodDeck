@@ -67,11 +67,60 @@ enum LyricsService {
                           album: album.trimmingCharacters(in: .whitespacesAndNewlines),
                           duration: duration)
         guard !track.title.isEmpty, !track.artist.isEmpty else { return ([], "缺少标题或歌手") }
+        let key = "\(track.title)|\(track.artist)|\(track.album)|\(Int(track.duration.rounded()))"
+        if let cached = cachedLines(key) { return cached }
+        // 三家同时查，按优先级依次取结果：优先源没命中时不必再等下一家从头开始查，
+        // 等待时间从「各家相加」变成「各家里较慢的那个」，标题顶在岛上的时间随之变短
+        var handles: [(Source, Task<[LyricLine], Never>)] = []
         for source in order(for: preferred) {
-            let lines = await find(source, track, http: http)
-            if !lines.isEmpty { return (lines, source.title) }
+            handles.append((source, Task { await find(source, track, http: http) }))
+        }
+        defer { for (_, task) in handles { task.cancel() } }
+        for (source, task) in handles {
+            let lines = await task.value
+            if !lines.isEmpty {
+                let result = (lines: lines, source: source.title)
+                store(key, result)
+                return result
+            }
         }
         return ([], "全部未命中")
+    }
+
+    // MARK: - 已查过的曲目
+
+    private static let cacheLock = NSLock()
+    private static var cache: [String: (lines: [LyricLine], source: String)] = [:]
+    private static var cacheOrder: [String] = []
+    private static let cacheLimit = 12
+
+    private static func cachedLines(_ key: String) -> (lines: [LyricLine], source: String)? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        guard let hit = cache[key] else { return nil }
+        cacheOrder.removeAll { $0 == key }
+        cacheOrder.append(key)
+        return hit
+    }
+
+    private static func store(_ key: String, _ value: (lines: [LyricLine], source: String)) {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        cache[key] = value
+        cacheOrder.removeAll { $0 == key }
+        cacheOrder.append(key)
+        while cacheOrder.count > cacheLimit {
+            let oldest = cacheOrder.removeFirst()
+            cache.removeValue(forKey: oldest)
+        }
+    }
+
+    // 自检用：清掉已查过的曲目
+    static func clearCache() {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        cache.removeAll()
+        cacheOrder.removeAll()
     }
 
     private static func find(_ source: Source, _ track: Track, http: HTTPClient) async -> [LyricLine] {

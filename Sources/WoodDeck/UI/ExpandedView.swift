@@ -63,9 +63,13 @@ struct ExpandedPanelView: View {
                                   onMode: onMode)
                 }
             }
+            .id(page)
+            .transition(.opacity)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .animation(.easeInOut(duration: IslandTiming.crossFade), value: alertText)
+        // 换页时上一页淡出、下一页淡入
+        .animation(.easeInOut(duration: IslandTiming.crossFade), value: page)
         .background(Theme.palette.panelColor)
         .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
     }

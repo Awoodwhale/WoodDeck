@@ -3,6 +3,32 @@ import SwiftUI
 
 // 从封面图取主色：跳过接近黑白与过暗的像素，取剩下的平均色
 enum CoverColor {
+    // 求一次主色要把封面解成位图再采样，收起形态每 0.2 秒重算一次界面，
+    // 因此按封面的标识记住结果，同一张封面只算一次
+    @MainActor
+    private static var cache: [String: Color] = [:]
+    @MainActor
+    private static var order: [String] = []
+
+    @MainActor
+    static func tint(from data: Data, token: String) -> Color? {
+        guard !token.isEmpty else { return tint(from: data) }
+        if let cached = cache[token] { return cached }
+        guard let color = tint(from: data) else { return nil }
+        cache[token] = color
+        order.append(token)
+        while order.count > 4 {
+            cache.removeValue(forKey: order.removeFirst())
+        }
+        return color
+    }
+
+    @MainActor
+    static func clearCache() {
+        cache.removeAll()
+        order.removeAll()
+    }
+
     static func tint(from data: Data) -> Color? {
         guard let image = NSImage(data: data),
               let tiff = image.tiffRepresentation,

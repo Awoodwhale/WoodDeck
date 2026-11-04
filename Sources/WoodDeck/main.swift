@@ -5,11 +5,13 @@ import AppKit
 let diagnosticFlags = ["--watchtest", "--sessiontest", "--conversationtest", "--compacttest",
                        "--renderpages", "--scrolltest", "--popuptest", "--hittest",
                        "--hovercost", "--hoverbreakdown", "--screentest", "--selftest", "--settingstest",
-                       "--lyricswichtest", "--lyricfadetest", "--monitortest", "--memunittest",
+                       "--lyricswichtest", "--lyricfadetest", "--lyricslottest", "--lyricwatch", "--lyriclivetest",
+                       "--monitortest", "--memunittest",
                        "--marqueetest", "--marqueevisible", "--musicrender", "--monitorrender", "--pagetest",
                        "--shots", "--themetest", "--marqueepixeltest", "--usagecost", "--notifytest",
                        "--hookfeedback", "--sheetfeedback", "--lyricstest", "--drift", "--animtest",
-                       "--attentiontest", "--alertfade", "--artworktest", "--musicmodetest"]
+                       "--attentiontest", "--alertfade", "--artworktest", "--musicmodetest",
+                       "--transitiontest", "--trackchangetest", "--coverflashtest"]
 if ProcessInfo.processInfo.environment["WOODDECK_HOOK_SOCKET"] == nil,
    CommandLine.arguments.contains(where: { diagnosticFlags.contains($0) }) {
     let temp = FileManager.default.temporaryDirectory
@@ -43,6 +45,22 @@ if let index = CommandLine.arguments.firstIndex(of: "--musicrender"), index + 1 
 
 if let index = CommandLine.arguments.firstIndex(of: "--monitorrender"), index + 1 < CommandLine.arguments.count {
     MainActor.assumeIsolated { HoverTest.renderMonitor(directory: CommandLine.arguments[index + 1]) }
+    exit(0)
+}
+
+if CommandLine.arguments.contains("--lyricslottest") {
+    MainActor.assumeIsolated { LyricSlotTest.run() }
+    exit(0)
+}
+
+if CommandLine.arguments.contains("--lyriclivetest") {
+    MainActor.assumeIsolated { LyricLiveTest.run() }
+    exit(0)
+}
+
+if let index = CommandLine.arguments.firstIndex(of: "--lyricwatch") {
+    let seconds = index + 1 < CommandLine.arguments.count ? Double(CommandLine.arguments[index + 1]) ?? 120 : 120
+    MainActor.assumeIsolated { LyricWatch.run(seconds: seconds) }
     exit(0)
 }
 
@@ -175,6 +193,24 @@ if CommandLine.arguments.contains("--attentiontest") {
 // 会话提醒出现与收回是否渐变
 if CommandLine.arguments.contains("--alertfade") {
     MainActor.assumeIsolated { AlertFadeTest.run() }
+    exit(0)
+}
+
+// 换歌与换页的渐变是否真的在过渡
+if CommandLine.arguments.contains("--transitiontest") {
+    MainActor.assumeIsolated { TransitionTest.run() }
+    exit(0)
+}
+
+// 换封面时底色是否会从两张半透明的图之间透出来
+if CommandLine.arguments.contains("--coverflashtest") {
+    MainActor.assumeIsolated { CoverFlashTest.run() }
+    exit(0)
+}
+
+// 切歌过程里画面是否有一段变空
+if CommandLine.arguments.contains("--trackchangetest") {
+    MainActor.assumeIsolated { TrackChangeTest.run() }
     exit(0)
 }
 
